@@ -111,6 +111,13 @@ handler, threaded sort) · `measure_math.py` / `measure.py` (Measure & Scale) ·
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), plans in
 [docs/ROADMAP.md](docs/ROADMAP.md).
 
+**📚 [Notes on Implementing a 3D Gaussian Splatting Rasterizer](docs/SPLAT-RENDERING-NOTES.md)**
+— general, implementation-agnostic lessons from building this renderer:
+the projection math and its classic pitfalls (transposed Jacobian,
+pixel→NDC factor), kernel conditioning, sorting theory, and how to test a
+splat renderer against closed-form math. Useful even if you never touch
+Blender.
+
 ## Support ❤
 
 Free and open source under **GPL-3.0** (see [LICENSE](LICENSE) and
