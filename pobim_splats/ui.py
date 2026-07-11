@@ -46,6 +46,8 @@ class POBIM_PT_splats(bpy.types.Panel):
             box.label(text=f'{obj.pobim_splat_count:,} splats')
             box.prop(obj, 'pobim_splat_scale')
             box.prop(obj, 'pobim_splat_opacity')
+            op = box.operator('pobim_splats.measure_scale', icon='DRIVER_DISTANCE')
+            op.uid = obj.pobim_splat_uid
 
 
 CLASSES = (POBIM_PT_splats,)

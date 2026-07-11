@@ -60,7 +60,16 @@ def run_tests():
             [0, 0, -1.02, -2.02],
             [0, 0, -1, 0]], np.float32)
 
+        # sorting is async now: launch, wait for the worker, pick up result
+        import time as _time
         sg.sort_if_needed(view, 0.0)
+        deadline = _time.monotonic() + 10.0
+        while sg._sort_result is None and _time.monotonic() < deadline:
+            _time.sleep(0.01)
+        sg.sort_if_needed(view, 0.0)
+        assert sg._applied_dir is not None, 'async sort did not complete'
+        log('OK async depth sort completes and applies')
+
         params = np.array([256, 256, 1.0, 1.0, 0, 0, 0, 0], np.float32)
         ubo_data = np.concatenate([view.T.ravel(), proj.T.ravel(), params])
         ubo = gpu.types.GPUUniformBuf(splat_gpu._np_buffer('FLOAT', ubo_data))

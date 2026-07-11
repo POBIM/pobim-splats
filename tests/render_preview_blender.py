@@ -55,7 +55,13 @@ def render():
         fb = gpu.state.active_framebuffer_get()
         fb.clear(color=(0.08, 0.08, 0.1, 1.0), depth=1.0)
 
+        import time as _time
         sg.sort_if_needed(view, 0.0)
+        deadline = _time.monotonic() + 10.0
+        while sg._sort_result is None and _time.monotonic() < deadline:
+            _time.sleep(0.01)
+        sg.sort_if_needed(view, 0.0)
+
         params = np.array([SIZE, SIZE, 1.0, 1.0, 0, 0, 0, 0], np.float32)
         ubo_data = np.concatenate([view.T.ravel(), proj.T.ravel(), params])
         ubo = gpu.types.GPUUniformBuf(splat_gpu._np_buffer('FLOAT', ubo_data))

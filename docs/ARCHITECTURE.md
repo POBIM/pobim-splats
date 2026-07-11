@@ -59,17 +59,49 @@ orthographic) → `cov2D = J·A·Σ·Aᵀ·Jᵀ` (A = mat3(modelView) รวม 
 - numpy array ส่งเข้า `Buffer`/`attr_fill` ผ่าน buffer protocol ได้ มี fallback
   `.tolist()` กันไว้
 
+## Compressed formats (เพิ่มรอบ 2)
+
+- **compressed.ply** (`ply_loader._decode_compressed`): chunk ละ 256 splats เก็บ
+  min/max ของ position/scale (float32), vertex เก็บ uint32 4 ช่อง — position/scale
+  quantize 11-10-11 bits lerp ใน chunk, rotation แบบ smallest-three (tag 2 bits
+  + 10 bits ×3), color/opacity เป็น unorm8 ตรงๆ ทั้งหมด decode แบบ vectorized
+  ยืนยันกับไฟล์จริงจาก splat-transform (NN error < 6e-4)
+- **SOG v2** (`sog_format.py` + `sog_loader.py`): meta.json + webp; ตำแหน่งเป็น
+  16-bit fixed-point ใน log-space (invLogTransform = sign·(e^|v|−1)), quats
+  smallest-three + tag byte 252–255, scales/sh0 ผ่าน codebook 256 ช่อง,
+  opacity อยู่ใน alpha ของ sh0 texture; `.sog` คือ zip ของทั้งชุด
+  decode webp ผ่าน `bpy.data.images` (colorspace Non-Color + CHANNEL_PACKED,
+  **พลิกแถวแนวตั้ง** เพราะ Blender เก็บ bottom-up) — lossless roundtrip เป๊ะ
+  (byte→float→round(×255) คืนค่าเดิม) ยืนยันกับไฟล์จริง (NN error 1.4e-4)
+- shN (SH bands สูง) ของ SOG ถูกข้าม — MVP แสดง band 0
+
+## Threaded depth sort (เพิ่มรอบ 2)
+
+ข้อสังเกตสำคัญ: ลำดับความลึกขึ้นกับ**ทิศ**ของแถว z ใน model-view เท่านั้น
+(การเลื่อน/ซูมเป็นค่าคงที่บวก ไม่เปลี่ยน argsort) ดังนั้น:
+- resort เฉพาะเมื่อทิศหมุนเกิน ~1° (`SORT_COS_THRESHOLD`)
+- argsort รันใน `threading.Thread` (numpy ปล่อย GIL) — draw handler แค่รับผล
+  แล้วอัปโหลด order texture; ระหว่างรอใช้ลำดับเดิม
+- เธรดปลุก main thread ผ่าน `bpy.app.timers.register` (ทางเดียวที่ thread-safe)
+
+## Measure & Scale (เพิ่มรอบ 2)
+
+`measure.py` เป็น modal operator: pick จุดโดย project ศูนย์กลาง splat
+(สุ่มสูงสุด 400k จุด) ด้วย numpy ต่อ mousemove แล้วเลือกจุด**หน้าสุด**ในรัศมี 25px
+(`measure_math.pick_nearest`); คลิกครบสองจุดแล้วเปิด dialog ใส่ระยะจริง →
+`apply_scale` คูณ `matrix_world` ด้วยเมทริกซ์สเกลรอบจุดแรก (จุดแรกอยู่กับที่,
+undo ได้) overlay วาดด้วย builtin `UNIFORM_COLOR` shader + `blf`
+
 ## Roadmap
 
 1. **SH bands 1–3** — view-dependent color: เพิ่ม texel ต่อ splat + ประเมิน SH
-   ใน vertex shader ตามทิศกล้อง (ทำได้ทันทีเพราะ loader อ่าน f_rest ได้ ถ้าเพิ่ม)
-2. **Threaded sort** — ย้าย argsort ไป thread + double-buffer order texture
-   เพื่อฆ่าอาการกระตุกในฉาน >3M splats
-3. **F12 render** — ทางเลือก:
+   ใน vertex shader ตามทิศกล้อง (SOG มีข้อมูล shN อยู่แล้ว)
+2. **F12 render** — ทางเลือก:
    - `bpy.types.RenderEngine` custom engine ที่ rasterize splat เข้า Render Result
    - หรือ hook `render_post` composite ภาพจาก offscreen render (มีโค้ดอยู่แล้วใน
      `tests/render_preview_blender.py` เป็นต้นแบบ)
-4. **Edit sync กับ POBIMStudio** — export ply จาก POBIMStudio → auto-reload
+3. **Edit sync กับ POBIMStudio** — export จาก POBIMStudio → auto-reload
    (มี Reload อยู่แล้ว; เพิ่ม file-watch timer ได้)
-5. **Frustum culling / LOD** — ข้าม splat นอกจอใน shader แล้วอยู่, เพิ่ม
-   subsample ตามระยะสำหรับฉากใหญ่
+4. **Frustum culling / LOD** — subsample ตามระยะสำหรับฉากใหญ่มาก
+5. **Measure เพิ่มเติม** — วัดหลายช่วงต่อเนื่อง, snap แบบ median ของ splat
+   รอบเคอร์เซอร์ (ลด noise), แสดงหน่วยตาม scene unit

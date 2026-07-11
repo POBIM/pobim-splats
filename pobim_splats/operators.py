@@ -17,13 +17,13 @@ def _load_into_entry(obj, report=None):
 
 
 class POBIM_OT_import_splat(bpy.types.Operator, ImportHelper):
-    """Import a 3D Gaussian Splatting .ply and display it in the viewport"""
+    """Import a 3D Gaussian Splat (.ply / .compressed.ply / .sog / meta.json)"""
     bl_idname = 'pobim_splats.import_ply'
-    bl_label = 'Import 3DGS PLY'
+    bl_label = 'Import Splat'
     bl_options = {'REGISTER', 'UNDO'}
 
     filename_ext = '.ply'
-    filter_glob: StringProperty(default='*.ply', options={'HIDDEN'})
+    filter_glob: StringProperty(default='*.ply;*.sog;*.json', options={'HIDDEN'})
 
     max_splats: IntProperty(
         name='Max Splats',

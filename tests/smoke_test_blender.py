@@ -137,6 +137,32 @@ def main():
         assert restored.pobim_splat_count == 100_000
     check('reconcile: delete purges, restore rebuilds', reconcile_delete_and_restore)
 
+    def apply_scale():
+        import numpy as np
+        obj = bpy.data.objects['torus']
+        before = np.array(obj.matrix_world, np.float64)
+        result = bpy.ops.pobim_splats.apply_scale(
+            uid=obj.pobim_splat_uid, measured=2.0, target=4.0,
+            pivot=(1.0, 0.5, -0.25))
+        assert result == {'FINISHED'}
+        after = np.array(obj.matrix_world, np.float64)
+        delta = after @ np.linalg.inv(before)
+        pivot_h = np.array([1.0, 0.5, -0.25, 1.0])
+        assert np.allclose(delta @ pivot_h, pivot_h, atol=1e-5), 'pivot moved'
+        assert abs(np.linalg.det(delta[:3, :3]) - 8.0) < 1e-3, 'scale factor wrong'
+    check('apply_scale keeps pivot, scales x2', apply_scale)
+
+    def import_compressed():
+        from make_test_ply import write_compressed_gaussian_ply
+        cpath = os.path.join(tmp, 'torus.compressed.ply')
+        write_compressed_gaussian_ply(cpath, *make_torus_splats(50_000))
+        result = bpy.ops.pobim_splats.import_ply(filepath=cpath)
+        assert result == {'FINISHED'}
+        obj = bpy.data.objects['torus.compressed']
+        assert obj.pobim_splat_count == 50_000
+        assert bpy.ops.pobim_splats.remove(uid=obj.pobim_splat_uid) == {'FINISHED'}
+    check('import compressed.ply via operator', import_compressed)
+
     def reload_and_remove():
         obj = bpy.data.objects['torus']
         uid = obj.pobim_splat_uid

@@ -12,7 +12,7 @@ import bpy
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
 
-from . import operators, splat_gpu, ui
+from . import measure, operators, splat_gpu, ui
 
 
 def _redraw(self, context):
@@ -45,10 +45,11 @@ def register():
         name='Show Splats', default=True, update=_redraw)
     bpy.types.Scene.pobim_splat_sort_interval = FloatProperty(
         name='Sort Interval (s)',
-        description='ยิ่งต่ำยิ่งเรียงลำดับความลึกถี่ (ถูกต้องขึ้นตอนหมุนกล้อง แต่กระตุกขึ้นในฉากใหญ่)',
-        default=0.5, min=0.05, max=5.0)
+        description='ช่วงเวลาขั้นต่ำระหว่างการเรียงลำดับความลึก (ทำงานเบื้องหลัง ไม่บล็อก viewport '
+                    'และเรียงเฉพาะเมื่อกล้องหมุนเกิน ~1°)',
+        default=0.2, min=0.0, max=5.0)
 
-    for cls in operators.CLASSES + ui.CLASSES:
+    for cls in operators.CLASSES + measure.CLASSES + ui.CLASSES:
         bpy.utils.register_class(cls)
 
     splat_gpu.register_draw_handler()
@@ -65,7 +66,7 @@ def unregister():
         bpy.app.handlers.load_post.remove(_on_load_post)
     splat_gpu.unregister_draw_handler()
 
-    for cls in reversed(operators.CLASSES + ui.CLASSES):
+    for cls in reversed(operators.CLASSES + measure.CLASSES + ui.CLASSES):
         bpy.utils.unregister_class(cls)
 
     del bpy.types.Object.pobim_splat_uid

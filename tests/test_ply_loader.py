@@ -18,7 +18,8 @@ _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 load_gaussian_ply = _mod.load_gaussian_ply
 
-from make_test_ply import make_torus_splats, write_gaussian_ply
+from make_test_ply import (
+    make_torus_splats, write_compressed_gaussian_ply, write_gaussian_ply)
 
 
 def main():
@@ -70,6 +71,30 @@ def main():
             raise AssertionError('should have rejected non-3DGS ply')
         except ValueError:
             pass
+
+    # compressed.ply roundtrip: same data through the synthetic encoder must
+    # decode to the original within quantization error
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 't.ply')
+        cpath = os.path.join(tmp, 't.compressed.ply')
+        pos, scales, quat, sh0, opacity = make_torus_splats(60_000)
+        write_gaussian_ply(path, pos, scales, quat, sh0, opacity)
+        write_compressed_gaussian_ply(cpath, pos, scales, quat, sh0, opacity)
+
+        ref = load_gaussian_ply(path, srgb_to_linear=False)
+        dec = load_gaussian_ply(cpath, srgb_to_linear=False)
+        assert dec.count == ref.count
+
+        # positions: within per-chunk quantization step (chunks of 256 random
+        # torus points span up to the full bbox)
+        err = np.abs(dec.positions - ref.positions).max()
+        assert err < 6e-3, f'position error {err}'
+        assert np.abs(dec.colors - ref.colors).max() < 3e-3
+        assert np.abs(dec.opacities - ref.opacities).max() < 3e-3
+        # covariance built from quantized quat+scale: compare traces
+        tr_ref = ref.cov6[:, 0] + ref.cov6[:, 3] + ref.cov6[:, 5]
+        tr_dec = dec.cov6[:, 0] + dec.cov6[:, 3] + dec.cov6[:, 5]
+        assert np.abs(tr_dec - tr_ref).max() < 5e-4
 
     print('all ply_loader tests passed')
 

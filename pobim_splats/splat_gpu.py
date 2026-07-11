@@ -13,11 +13,17 @@
 # One draw call per splat object — no per-splat Blender objects, no geometry
 # nodes, which is what keeps this light at millions of splats.
 
+import threading
 import time
 
 import bpy
 import gpu
 import numpy as np
+
+# resort when the object-space view direction rotates more than ~1 degree.
+# depth order depends only on that direction — translation and zoom never
+# change it — so panning/zooming costs zero sorts.
+SORT_COS_THRESHOLD = 0.99985
 
 # data texture: 3 texels per splat, rows hold a whole number of splats
 DATA_TEX_WIDTH = 2046
@@ -229,8 +235,10 @@ class SplatGPU:
 
         self.order_rows = (n + ORDER_TEX_WIDTH - 1) // ORDER_TEX_WIDTH
         self.order_tex = None
-        self.last_sort_mv = None
         self.last_sort_time = 0.0
+        self._applied_dir = None      # object-space view dir of applied order
+        self._sort_pending = False    # a worker thread is running
+        self._sort_result = None      # (order, dir) ready for pickup
         self._upload_order(np.arange(n, dtype=np.int32))
 
     def _upload_order(self, order):
@@ -241,19 +249,63 @@ class SplatGPU:
             data=_np_buffer('FLOAT', padded))
 
     def sort_if_needed(self, model_view, interval):
-        """Re-sort back-to-front when the view/model changed, throttled."""
-        if self.last_sort_mv is not None and np.allclose(
-                model_view, self.last_sort_mv, atol=1e-7):
+        """Back-to-front ordering, computed off the draw thread.
+
+        The draw handler stays fast: it only picks up finished results
+        (GPU upload) and decides whether to launch a new argsort worker.
+        numpy's sort releases the GIL, so the viewport keeps drawing.
+        """
+        result = self._sort_result
+        if result is not None:
+            self._sort_result = None
+            order, direction = result
+            self._upload_order(order)
+            self._applied_dir = direction
+
+        if self._sort_pending:
+            return
+
+        direction = model_view[2, :3].astype(np.float64)
+        norm = np.linalg.norm(direction)
+        if norm == 0.0:
+            return
+        direction /= norm
+        if (self._applied_dir is not None and
+                float(direction @ self._applied_dir) > SORT_COS_THRESHOLD):
             return
         now = time.monotonic()
         if now - self.last_sort_time < interval:
             return
 
-        # view-space z (negative in front of camera); ascending = farthest first
-        z = self.positions @ model_view[2, :3] + model_view[2, 3]
-        self._upload_order(np.argsort(z).astype(np.int32))
-        self.last_sort_mv = model_view.copy()
-        self.last_sort_time = time.monotonic()
+        self.last_sort_time = now
+        self._sort_pending = True
+        row = model_view[2, :3].copy()
+        positions = self.positions
+
+        def job():
+            try:
+                # view-space z (negative in front); ascending = farthest first.
+                # the constant translation term never changes the order.
+                order = np.argsort(positions @ row).astype(np.int32)
+                self._sort_result = (order, direction)
+            except Exception as e:
+                print(f'[pobim_splats] sort failed: {e}')
+            finally:
+                self._sort_pending = False
+                if _draw_handle is not None:  # skip after addon unregister
+                    try:
+                        # timers.register is the documented thread-safe way
+                        # to poke the main thread for a redraw
+                        bpy.app.timers.register(_redraw_once, first_interval=0.0)
+                    except Exception:
+                        pass
+
+        threading.Thread(target=job, daemon=True).start()
+
+
+def _redraw_once():
+    redraw_viewports()
+    return None
 
 
 class SplatEntry:
@@ -388,16 +440,24 @@ def purge_orphans():
 
 
 def load_entry_for_object(obj):
-    """(Re)load the PLY referenced by a splat empty into the registry."""
-    import os
+    """(Re)load the splat file referenced by a splat empty into the registry.
 
-    from .ply_loader import load_gaussian_ply
+    Dispatches on extension: .ply (standard or compressed), .sog bundle,
+    or an unbundled SOG meta.json.
+    """
+    import os
 
     filepath = bpy.path.abspath(obj.pobim_splat_file)
     if not os.path.exists(filepath):
         raise FileNotFoundError(f'ไม่พบไฟล์: {filepath}')
 
-    cloud = load_gaussian_ply(
+    lower = filepath.lower()
+    if lower.endswith('.sog') or lower.endswith('.json'):
+        from .sog_loader import load_sog as loader
+    else:
+        from .ply_loader import load_gaussian_ply as loader
+
+    cloud = loader(
         filepath,
         max_splats=obj.pobim_splat_max,
         srgb_to_linear=obj.pobim_splat_srgb)
