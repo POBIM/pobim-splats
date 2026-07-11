@@ -8,7 +8,7 @@ class POBIM_PT_splats(bpy.types.Panel):
     bl_idname = 'POBIM_PT_splats'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = '3DGS'
+    bl_category = 'POBIM3DGS'
 
     def draw(self, context):
         layout = self.layout
@@ -54,7 +54,12 @@ class POBIM_PT_splats(bpy.types.Panel):
             row = box.row(align=True)
             op = row.operator('pobim_splats.measure_scale', icon='DRIVER_DISTANCE')
             op.uid = obj.pobim_splat_uid
+            row.prop(scene, 'pobim_splat_measure_kind', text='')
             row.prop(scene, 'pobim_splat_measure_mode', text='')
+            if obj.get('pobim_measures'):
+                op = box.operator('pobim_splats.clear_measures',
+                                  icon='TRASH', text='Clear Measurements')
+                op.uid = obj.pobim_splat_uid
 
 
 CLASSES = (POBIM_PT_splats,)

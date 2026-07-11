@@ -50,6 +50,42 @@ def unproject_pixel(persp, mx, my, depth01, width, height):
     return (h[:3] / h[3]).astype(np.float32)
 
 
+def polygon_area(points):
+    """0.5 * |sum (pj-p0) x (pj+1-p0)| — same fan-cross as POBIMStudio."""
+    points = np.asarray(points, np.float64)
+    if len(points) < 3:
+        return 0.0
+    p0 = points[0]
+    acc = np.zeros(3, np.float64)
+    for j in range(1, len(points) - 1):
+        acc += np.cross(points[j] - p0, points[j + 1] - p0)
+    return float(np.linalg.norm(acc) * 0.5)
+
+
+def polygon_perimeter(points, closed=True):
+    points = np.asarray(points, np.float64)
+    n = len(points)
+    if n < 2:
+        return 0.0
+    total = sum(float(np.linalg.norm(points[i + 1] - points[i]))
+                for i in range(n - 1))
+    if closed and n > 2:
+        total += float(np.linalg.norm(points[0] - points[-1]))
+    return total
+
+
+def box_corners(pmin, pmax):
+    """8 corners of an axis-aligned box, z-major then y then x."""
+    return [np.array([x, y, z], np.float32)
+            for z in (pmin[2], pmax[2])
+            for y in (pmin[1], pmax[1])
+            for x in (pmin[0], pmax[0])]
+
+
+BOX_EDGES = ((0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7),
+             (0, 4), (1, 5), (2, 6), (3, 7))
+
+
 def scale_about_point_matrix(pivot, factor):
     """4x4 world matrix that scales uniformly by factor, keeping pivot fixed."""
     m = np.eye(4, dtype=np.float64)

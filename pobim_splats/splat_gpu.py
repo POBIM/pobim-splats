@@ -112,15 +112,18 @@ void main()
     vec4 d2 = texelFetch(dataTex, ivec2((base + 2) % 2046, (base + 2) / 2046), 0);
 
     vec4 cam = u.modelView * vec4(d0.xyz, 1.0);
-    vec4 pos2d = u.projection * cam;
+    bool ortho = u.projection[3][3] == 1.0;
 
-    float clipw = 1.2 * pos2d.w;
-    if (pos2d.z < -clipw ||
-        pos2d.x < -clipw || pos2d.x > clipw ||
-        pos2d.y < -clipw || pos2d.y > clipw) {
+    // behind the camera (perspective only) — engine gsplatCenter.js
+    if (!ortho && cam.z > 0.0) {
         emitDegenerate();
         return;
     }
+
+    vec4 pos2d = u.projection * cam;
+    // never clip against near/far: clamp depth instead (engine behavior),
+    // so walking through a scan doesn't pop splats at the near plane
+    pos2d.z = clamp(pos2d.z, -abs(pos2d.w), abs(pos2d.w));
 
     vec2 vp = u.params.xy;
     float fx = u.projection[0][0] * vp.x * 0.5;
@@ -179,8 +182,21 @@ void main()
     // with cxx >= cyy (or a perfect circle); x-axis is the correct fallback
     vec2 dv = vec2(cxy, lambda1 - cxx);
     vec2 diagv = dot(dv, dv) > 1e-12 ? normalize(dv) : vec2(1.0, 0.0);
-    vec2 majorAxis = min(sqrt(2.0 * lambda1), 1024.0) * diagv;
-    vec2 minorAxis = min(sqrt(2.0 * lambda2), 1024.0) * vec2(diagv.y, -diagv.x);
+    float vmin = min(1024.0, min(vp.x, vp.y));
+    float l1 = min(sqrt(2.0 * lambda1), vmin);
+    float l2 = min(sqrt(2.0 * lambda2), vmin);
+    vec2 majorAxis = l1 * diagv;
+    vec2 minorAxis = l2 * vec2(diagv.y, -diagv.x);
+
+    // extent-aware frustum cull (engine gsplatCorner.js): reject only when
+    // the whole ellipse is outside — center-based culling pops large splats
+    // at the screen edges with wide lenses
+    float extentNdc = 2.0 * max(l1, l2) / min(vp.x, vp.y);
+    if (any(greaterThan(abs(pos2d.xy) - vec2(extentNdc) * abs(pos2d.w),
+                        vec2(abs(pos2d.w))))) {
+        emitDegenerate();
+        return;
+    }
 
     uint pc = floatBitsToUint(d1.w);
     vec3 rgb = vec3(float((pc >> 16u) & 255u),
@@ -225,15 +241,25 @@ void main()
 }
 """
 
-FRAG_SRC = """
+# normalized gaussian falloff (engine gsplat.js frag): rescaled so alpha
+# reaches exactly zero at the kernel edge — soft ellipse rims instead of a
+# visible cutoff at exp(-4), which reads as hard-edged blobs on wide lenses
+_FALLOFF_GLSL = """
+const float EXP4 = 0.0183156389;
+
+float falloff(vec2 quad)
+{
+    float t2 = dot(quad, quad);
+    return (exp(-t2) - EXP4) / (1.0 - EXP4);
+}
+"""
+
+FRAG_SRC = _FALLOFF_GLSL + """
 void main()
 {
-    float a = -dot(vQuad, vQuad);
-    if (a < -4.0) {
-        discard;
-    }
-    float alpha = exp(a) * vColor.a;
-    if (alpha < 0.004) {
+    float f = falloff(vQuad);
+    float alpha = f * vColor.a;
+    if (f <= 0.0 || alpha < 0.004) {
         discard;
     }
     FragColor = vec4(vColor.rgb, alpha);
@@ -242,14 +268,10 @@ void main()
 
 # depth-pick variant: opaque threshold + fragment depth in the red channel,
 # used by the measure tool's Surface mode (front-most splat surface wins)
-PICK_FRAG_SRC = """
+PICK_FRAG_SRC = _FALLOFF_GLSL + """
 void main()
 {
-    float a = -dot(vQuad, vQuad);
-    if (a < -4.0) {
-        discard;
-    }
-    float alpha = exp(a) * vColor.a;
+    float alpha = falloff(vQuad) * vColor.a;
     if (alpha < 0.2) {
         discard;
     }

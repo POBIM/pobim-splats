@@ -1,9 +1,9 @@
 bl_info = {
     'name': 'POBIM Splats — 3D Gaussian Splatting Viewer',
     'author': 'POBIM',
-    'version': (0, 3, 0),
+    'version': (0, 4, 0),
     'blender': (4, 2, 0),
-    'location': 'View3D > Sidebar (N) > 3DGS',
+    'location': 'View3D > Sidebar (N) > POBIM3DGS',
     'description': 'Import and display 3D Gaussian Splatting .ply files with a real GPU splat renderer',
     'category': '3D View',
 }
@@ -51,6 +51,15 @@ def register():
         name='Opacity', default=1.0, min=0.0, max=2.0, update=_redraw)
     bpy.types.Scene.pobim_splats_enabled = BoolProperty(
         name='Show Splats', default=True, update=_redraw)
+    bpy.types.Scene.pobim_splat_measure_kind = EnumProperty(
+        name='Measure Kind',
+        description='ชนิดการวัด (กด D/A/V สลับได้ระหว่างวัด)',
+        items=(
+            ('DISTANCE', 'Distance', 'วัดระยะเป็นช่วงต่อเนื่อง'),
+            ('AREA', 'Area', 'วัดพื้นที่รูปหลายเหลี่ยม + เส้นรอบรูป'),
+            ('VOLUME', 'Volume', 'วัดปริมาตรกล่องจากมุมสองจุด'),
+        ),
+        default='DISTANCE')
     bpy.types.Scene.pobim_splat_measure_mode = EnumProperty(
         name='Pick Mode',
         description='วิธีจับจุดของเครื่องมือวัด (กด M สลับได้ระหว่างวัด)',
@@ -102,5 +111,6 @@ def unregister():
     del bpy.types.Object.pobim_splat_opacity
     del bpy.types.Scene.pobim_splats_enabled
     del bpy.types.Scene.pobim_splats_aa
+    del bpy.types.Scene.pobim_splat_measure_kind
     del bpy.types.Scene.pobim_splat_measure_mode
     del bpy.types.Scene.pobim_splat_sort_interval

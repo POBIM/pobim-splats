@@ -76,6 +76,25 @@ def main():
     assert np.allclose(np.linalg.norm(hq[:3] - pivot),
                        2.5 * np.linalg.norm(q - pivot), atol=1e-9)
 
+    # polygon area/perimeter (POBIMStudio fan-cross): unit square in a
+    # tilted plane keeps area 1
+    polygon_area = _mod.polygon_area
+    polygon_perimeter = _mod.polygon_perimeter
+    sq = np.array([[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]], np.float64)
+    assert abs(polygon_area(sq) - 1.0) < 1e-9
+    assert abs(polygon_perimeter(sq) - 4.0) < 1e-9
+    # concave L-shape: area 3 (2x2 minus 1x1)
+    ell = np.array([[0, 0, 0], [2, 0, 0], [2, 1, 0], [1, 1, 0],
+                    [1, 2, 0], [0, 2, 0]], np.float64)
+    assert abs(polygon_area(ell) - 3.0) < 1e-9
+
+    # box corners/edges: 8 corners, 12 edges each axis-aligned unit length
+    box_corners = _mod.box_corners
+    corners = box_corners(np.zeros(3), np.ones(3))
+    assert len(corners) == 8
+    for e0, e1 in _mod.BOX_EDGES:
+        assert abs(np.linalg.norm(corners[e0] - corners[e1]) - 1.0) < 1e-6
+
     print('all measure_math tests passed')
 
 

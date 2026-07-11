@@ -163,6 +163,30 @@ def main():
         assert bpy.ops.pobim_splats.remove(uid=obj.pobim_splat_uid) == {'FINISHED'}
     check('import compressed.ply via operator', import_compressed)
 
+    def measure_store_roundtrip():
+        import numpy as np
+        from pobim_splats.measure import MeasureStore
+        obj = bpy.data.objects['torus']
+        store = MeasureStore(obj)
+        assert store.chains == [] and store.polygons == [] and store.boxes == []
+        store.chains.append([np.array([0, 0, 0], np.float32),
+                             np.array([1, 2, 3], np.float32)])
+        store.polygons.append([np.array([0, 0, 0], np.float32),
+                               np.array([1, 0, 0], np.float32),
+                               np.array([1, 1, 0], np.float32)])
+        store.boxes.append([np.array([0, 0, 0], np.float32),
+                            np.array([2, 2, 2], np.float32)])
+        store.save()
+        again = MeasureStore(obj)
+        assert len(again.chains) == 1 and len(again.chains[0]) == 2
+        assert np.allclose(again.chains[0][1], (1, 2, 3))
+        assert len(again.polygons) == 1 and len(again.boxes) == 1
+        # clear operator wipes the property
+        result = bpy.ops.pobim_splats.clear_measures(uid=obj.pobim_splat_uid)
+        assert result == {'FINISHED'}
+        assert not obj.get('pobim_measures')
+    check('measure store persists and clears', measure_store_roundtrip)
+
     def reload_and_remove():
         obj = bpy.data.objects['torus']
         uid = obj.pobim_splat_uid

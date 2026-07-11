@@ -39,7 +39,7 @@ light and pretty at millions of splats.
    [latest release](https://github.com/POBIM/pobim-splats/releases/latest)
 2. In Blender: `Edit > Preferences > Add-ons > (top-right menu) > Install from Disk…`
 3. Enable **POBIM Splats**
-4. Open the panel: press **N** in the 3D viewport → **3DGS** tab
+4. Open the panel: press **N** in the 3D viewport → **POBIM3DGS** tab
 
 Requires **Blender 4.2+** (tested on 4.5 LTS).
 
@@ -60,21 +60,23 @@ hard cap ≈ 11.1M) and **Rotate to Z-up** (most scans are Y-down).
 Per-splat controls in the panel: **Splat Size**, **Opacity**, **Reload**,
 **Remove**, and **Measure & Scale**.
 
-### Measure & Scale
+### Measure: Distance / Area / Volume
 
-Scans rarely come in real-world units. To fix that:
+Open the **Measure** tool from the splat's panel box (tab **POBIM3DGS**;
+the dropdowns next to the button pre-select kind and pick mode).
+Measurements live on the splat object — they follow its transform and
+persist across tool sessions and .blend save/load.
 
-1. Click **Measure & Scale** in the splat's panel box (the dropdown next to
-   it selects the pick mode; **M** toggles it while measuring)
-   - **Surface** — picks points on the rendered splat surface via a depth
-     pass (like POBIMStudio's measure tool)
-   - **Splat Centers** — snaps to the nearest gaussian center
-2. Left-click to add points — segments chain like POBIMStudio's tool, with
-   distance chips per segment and a running total in the status bar
-3. Press **Enter** (or **S**) to open the scale dialog for the last segment,
-   enter the **real distance**, confirm. Right-click / Esc exits.
-
-The cloud scales uniformly about the segment's first point. Ctrl+Z undoes it.
+- **Left click** adds a point — or grabs an existing point to move it
+- **Right click** finishes the current chain/polygon and **stays in the tool**
+- **D / A / V** switches kind: Distance (chained segments), Area
+  (polygon m² + perimeter), Volume (box m³ from two opposite corners)
+- **M** toggles picking: **Surface** (depth pick on the rendered splats,
+  like POBIMStudio) or **Splat Centers** (snap to nearest gaussian)
+- **X** deletes the point under the cursor; **Esc** exits
+- **Enter / S** opens the scale dialog: type the real-world length of the
+  last segment and the cloud rescales about that segment's first point
+  (undoable). **Clear Measurements** in the panel wipes everything.
 
 ### Color tip
 
@@ -127,7 +129,7 @@ the roadmap: F12 rendering, crop box, and view-dependent color (SH bands).
 
 **ติดตั้ง**: โหลด zip จาก [Releases](https://github.com/POBIM/pobim-splats/releases/latest)
 → `Edit > Preferences > Add-ons > Install from Disk…` → เปิดใช้งาน →
-กด **N** ใน viewport → แท็บ **3DGS**
+กด **N** ใน viewport → แท็บ **POBIM3DGS**
 
 **Measure & Scale**: กดปุ่มในแผง → คลิกจุดสองจุดบน splat → ใส่ระยะจริง →
 โมเดลถูกปรับสเกลให้ตรงหน่วยจริง (Ctrl+Z ย้อนได้)
