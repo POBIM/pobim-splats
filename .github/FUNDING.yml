@@ -1,0 +1,8 @@
+# แสดงปุ่ม "Sponsor" บนหน้า GitHub repo
+# เปิดใช้: แก้ username ให้ตรงของจริง แล้วลบ # ออก
+# GitHub Sponsors สมัครที่ https://github.com/sponsors (รองรับไทย, payout ผ่าน Stripe)
+# Ko-fi สมัครที่ https://ko-fi.com (payout ผ่าน PayPal — ง่ายสุดสำหรับไทย)
+
+# github: [your-github-username]
+# ko_fi: your-kofi-username
+# custom: ['https://www.buymeacoffee.com/your-username']

@@ -1,6 +1,13 @@
 # POBIM Splats — 3D Gaussian Splatting Viewer for Blender
 
-แสดงผลไฟล์ 3D Gaussian Splatting (`.ply`) ใน Blender viewport ด้วย splat renderer จริง
+**[EN]** View 3D Gaussian Splats (`.ply`, `.compressed.ply`, `.sog`) inside the
+Blender viewport with a real GPU splat renderer — EWA splatting, threaded depth
+sorting, one draw call per cloud. No per-splat objects, no geometry nodes, so it
+stays light at millions of splats. Includes a Measure & Scale tool to bring
+scans to real-world size. Free and open source (GPL-3.0) — if it saves you
+time, consider sponsoring ❤
+
+แสดงผลไฟล์ 3D Gaussian Splatting ใน Blender viewport ด้วย splat renderer จริง
 (EWA splatting + depth sorting) — สถาปัตยกรรมเดียวกับ web viewer อย่าง SuperSplat
 ไม่ใช่การสร้าง object ต่อ splat จึงเบากว่า addon แบบ Geometry Nodes มาก
 
@@ -95,9 +102,11 @@ python3 tests/make_test_ply.py torus.compressed.ply 500000        # แบบ co
 - `docs/ARCHITECTURE.md` — สถาปัตยกรรมโดยละเอียด
 - `docs/ROADMAP.md` — แผนสู่เวอร์ชันขายจริง + เรื่อง license/ช่องทางขาย
 
-## License
+## License & Support
 
-GNU GPL v3 (ดู `LICENSE`) — เป็นข้อกำหนดของ Blender สำหรับ addon ที่ใช้ `bpy`
-การขายเชิงพาณิชย์ทำได้ตามปกติ (โมเดลเดียวกับ Blender Market) —
-รายละเอียดใน `docs/ROADMAP.md` ส่วน "เรื่อง License" และดู `THIRD_PARTY.md`
-สำหรับเครดิตสเปค/อัลกอริทึมที่อ้างอิง
+โอเพนซอร์สภายใต้ **GNU GPL v3** (ดู `LICENSE`, เครดิตใน `THIRD_PARTY.md`)
+ใช้ฟรีทั้งงานส่วนตัวและงานพาณิชย์
+
+ถ้า addon นี้ช่วยประหยัดเวลาคุณได้ สนับสนุนผู้พัฒนาได้ทาง **GitHub Sponsors**
+หรือ **Ko-fi** (ปุ่ม Sponsor บนหัว repo) — ทุกการสนับสนุนช่วยให้มีเวลาทำ
+ฟีเจอร์ใน `docs/ROADMAP.md` ต่อ (F12 render, crop box, SH bands)
