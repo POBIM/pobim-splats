@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+pobim_splats.zip
+tests/gpu_test_result.txt
