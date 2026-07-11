@@ -193,7 +193,8 @@ void main()
     // with cxx >= cyy (or a perfect circle); x-axis is the correct fallback
     vec2 dv = vec2(cxy, lambda1 - cxx);
     vec2 diagv = dot(dv, dv) > 1e-12 ? normalize(dv) : vec2(1.0, 0.0);
-    float vmin = min(1024.0, min(vp.x, vp.y));
+    // half of the engine's on-screen cap (the quad is scaled 2x below)
+    float vmin = 0.5 * min(1024.0, min(vp.x, vp.y));
     float l1 = min(sqrt(2.0 * lambda1), vmin);
     float l2 = min(sqrt(2.0 * lambda2), vmin);
     vec2 majorAxis = l1 * diagv;
@@ -202,7 +203,7 @@ void main()
     // extent-aware frustum cull (engine gsplatCorner.js): reject only when
     // the whole ellipse is outside — center-based culling pops large splats
     // at the screen edges with wide lenses
-    float extentNdc = 2.0 * max(l1, l2) / min(vp.x, vp.y);
+    float extentNdc = 4.0 * max(l1, l2) / min(vp.x, vp.y);
     if (any(greaterThan(abs(pos2d.xy) - vec2(extentNdc) * abs(pos2d.w),
                         vec2(abs(pos2d.w))))) {
         emitDegenerate();
@@ -244,9 +245,16 @@ void main()
     vec2 c = kCorners[corner];
     vQuad = c;
 
+    // The 2.0 factor converts the pixel half-extent to NDC (NDC spans 2
+    // units across the viewport). The antimatter15-derived shader this was
+    // ported from omits it, drawing every splat at HALF its true screen
+    // size — the root cause of thin/fuzzy surfaces (and why Splat Size ~2
+    // "looked right"). With it, vQuad t in ±2 maps to r = t*sqrt(2)*sigma,
+    // so exp(-t^2) in the fragment is exactly the true gaussian
+    // exp(-r^2 / (2 sigma^2)) reaching exp(-4) at the quad edge.
     vec2 center = pos2d.xy / pos2d.w;
     gl_Position = vec4(
-        center + c.x * majorAxis / vp + c.y * minorAxis / vp,
+        center + (c.x * majorAxis + c.y * minorAxis) * 2.0 / vp,
         pos2d.z / pos2d.w,
         1.0);
 }

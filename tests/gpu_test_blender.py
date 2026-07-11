@@ -200,6 +200,108 @@ def run_tests():
         f'ring radius={ring_r:.2f}')
     assert 1.2 < ring_r < 2.8, f'picked point not on torus surface (r={ring_r})'
 
+    # --- analytic gaussian profile -------------------------------------
+    # Render ONE isotropic splat and compare the alpha falloff against the
+    # true gaussian. Catches size/falloff calibration bugs — e.g. the
+    # missing px->NDC factor 2 that drew every splat at half size.
+    from pobim_splats.ply_loader import build_cloud
+
+    sigma_w = 0.5
+    z_dist = 8.0
+    f_ndc = 2.0
+    SIZE = 256
+    f_px = f_ndc * SIZE / 2.0
+    sigma_px = f_px * sigma_w / z_dist   # = 16 px
+
+    one = build_cloud(
+        np.zeros((1, 3), np.float32),
+        np.full((1, 3), sigma_w, np.float32),
+        np.array([[1, 0, 0, 0]], np.float32),
+        np.ones((1, 3), np.float32),
+        np.ones(1, np.float32))
+    sg1 = splat_gpu.SplatGPU(one)
+
+    view1 = np.eye(4, dtype=np.float32)
+    view1[2, 3] = -z_dist
+    proj1 = np.array([
+        [f_ndc, 0, 0, 0], [0, f_ndc, 0, 0],
+        [0, 0, -1.02, -2.02], [0, 0, -1, 0]], np.float32)
+
+    def render_single(sgx, view_m, proj_m):
+        offsx = gpu.types.GPUOffScreen(SIZE, SIZE)
+        with offsx.bind():
+            fbx = gpu.state.active_framebuffer_get()
+            fbx.clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
+            gpu.state.blend_set('ALPHA')
+            shader.bind()
+            # keep the UBO referenced until the draw call — passing the
+            # temporary inline lets Python free it before batch.draw
+            ubox = make_ubo(view_m, proj_m, SIZE)
+            shader.uniform_block('u', ubox)
+            shader.uniform_sampler('dataTex', sgx.data_tex)
+            shader.uniform_sampler('orderTex', sgx.order_tex)
+            shader.uniform_sampler('shTex', sgx.data_tex)
+            sgx.batch.draw(shader)
+            gpu.state.blend_set('NONE')
+            rawx = fbx.read_color(0, 0, SIZE, SIZE, 4, 0, 'FLOAT')
+            out = np.array(rawx.to_list(), np.float32).reshape(SIZE, SIZE, 4)
+        offsx.free()
+        return out
+
+    px1 = render_single(sg1, view1, proj1)
+    lit1 = np.argwhere(px1[..., 3] > 0.01)
+    log(f'       single splat: lit={lit1.shape[0]} '
+        f'bbox={(lit1.min(0).tolist(), lit1.max(0).tolist()) if lit1.shape[0] else None}')
+    cx = SIZE // 2
+    exp4 = float(np.exp(-4.0))
+
+    def expected_alpha(r_px):
+        g = float(np.exp(-(r_px ** 2) / (2.0 * sigma_px ** 2)))
+        return max((g - exp4) / (1.0 - exp4), 0.0)
+
+    a0 = float(px1[cx, cx, 3])
+    a1 = float(px1[cx, cx + int(sigma_px), 3])
+    a2 = float(px1[cx, cx + int(2 * sigma_px), 3])
+    log(f'OK gaussian profile: a(0)={a0:.3f} a(σ)={a1:.3f}/{expected_alpha(sigma_px):.3f} '
+        f'a(2σ)={a2:.3f}/{expected_alpha(2 * sigma_px):.3f}')
+    assert a0 > 0.95, f'center alpha {a0}'
+    assert abs(a1 - expected_alpha(sigma_px)) < 0.08, \
+        f'alpha at 1σ = {a1} expected {expected_alpha(sigma_px)} — size/falloff miscalibrated'
+    assert abs(a2 - expected_alpha(2 * sigma_px)) < 0.06, \
+        f'alpha at 2σ = {a2} expected {expected_alpha(2 * sigma_px)}'
+
+    # --- edge stretch bounded at wide FOV -------------------------------
+    # A splat near the screen edge of a ~90° lens must not smear into a
+    # radial streak (INRIA Jacobian clamp keeps its footprint bounded).
+    def footprint(x_world):
+        cl = build_cloud(
+            np.array([[x_world, 0.0, 0.0]], np.float32),
+            np.full((1, 3), 0.15, np.float32),
+            np.array([[1, 0, 0, 0]], np.float32),
+            np.ones((1, 3), np.float32),
+            np.ones(1, np.float32))
+        sgx = splat_gpu.SplatGPU(cl)
+        vw = np.eye(4, dtype=np.float32)
+        vw[2, 3] = -6.0
+        pw = np.array([
+            [1.0, 0, 0, 0], [0, 1.0, 0, 0],
+            [0, 0, -1.02, -2.02], [0, 0, -1, 0]], np.float32)
+        img = render_single(sgx, vw, pw)
+        lit_idx = np.argwhere(img[..., 3] > 0.05)
+        if lit_idx.shape[0] == 0:
+            return 0.0
+        return float(max(lit_idx[:, 0].max() - lit_idx[:, 0].min(),
+                         lit_idx[:, 1].max() - lit_idx[:, 1].min()))
+
+    center_ext = footprint(0.0)
+    edge_ext = footprint(5.2)   # ndc x ≈ 0.87 at z=6 with f=1 (~90° lens)
+    log(f'OK edge stretch: center={center_ext:.0f}px edge={edge_ext:.0f}px '
+        f'ratio={edge_ext / max(center_ext, 1.0):.2f}')
+    assert center_ext > 4, 'center splat did not render'
+    assert edge_ext > 0, 'edge splat was wrongly culled'
+    assert edge_ext < 3.5 * center_ext, \
+        f'edge splat smeared into a streak ({edge_ext:.0f}px vs {center_ext:.0f}px)'
+
     pobim_splats.unregister()
     log('PASSED')
 
