@@ -1,112 +1,131 @@
-# POBIM Splats — 3D Gaussian Splatting Viewer for Blender
+# POBIM Splats — 3D Gaussian Splatting for Blender
 
-**[EN]** View 3D Gaussian Splats (`.ply`, `.compressed.ply`, `.sog`) inside the
-Blender viewport with a real GPU splat renderer — EWA splatting, threaded depth
-sorting, one draw call per cloud. No per-splat objects, no geometry nodes, so it
-stays light at millions of splats. Includes a Measure & Scale tool to bring
-scans to real-world size. Free and open source (GPL-3.0) — if it saves you
-time, consider sponsoring ❤
+[![Release](https://img.shields.io/github/v/release/POBIM/pobim-splats)](https://github.com/POBIM/pobim-splats/releases)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+[![Blender 4.2+](https://img.shields.io/badge/Blender-4.2%2B-orange)](https://www.blender.org/)
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ff69b4)](https://github.com/sponsors/POBIM)
 
-แสดงผลไฟล์ 3D Gaussian Splatting ใน Blender viewport ด้วย splat renderer จริง
-(EWA splatting + depth sorting) — สถาปัตยกรรมเดียวกับ web viewer อย่าง SuperSplat
-ไม่ใช่การสร้าง object ต่อ splat จึงเบากว่า addon แบบ Geometry Nodes มาก
-
-ทดสอบแล้วกับ **Blender 4.5 LTS** (ต้องเป็น 4.2 ขึ้นไป)
+View 3D Gaussian Splats inside the Blender viewport with a **real GPU splat
+renderer** — the same architecture as web viewers like SuperSplat: per-splat
+data lives in GPU textures, drawn as screen-space ellipses (EWA splatting) in
+**one draw call per cloud**. No per-splat objects, no geometry nodes — it stays
+light and pretty at millions of splats.
 
 ![preview](tests/preview.png)
 
-## ติดตั้ง
+## Features
 
-1. สร้างไฟล์ zip ของ addon:
-   ```bash
-   ./scripts/build_zip.sh        # ได้ pobim_splats.zip
-   ```
-2. ใน Blender: `Edit > Preferences > Add-ons > (ลูกศรมุมขวาบน) > Install from Disk…`
-   เลือก `pobim_splats.zip` แล้วติ๊กเปิดใช้งาน
-3. แผงควบคุมอยู่ที่ **View3D > กด N > แท็บ "3DGS"**
+- **Real splat rendering** — projected 3D covariance, soft gaussian falloff,
+  correct alpha blending; splats occlude and are occluded by scene meshes
+- **Import without conversion** — standard `.ply`, SuperSplat
+  `.compressed.ply`, and SOG v2 (`.sog` bundle or `meta.json`)
+- **Fast** — depth sorting runs on a background thread (the viewport never
+  stalls) and only re-sorts when the view direction rotates more than ~1°;
+  panning and zooming cost zero sorts
+- **Measure & Scale** — click two points on the splat, type the real-world
+  distance, and the scan snaps to real-world size (scaled about the first
+  point, undoable)
+- **Behaves like a Blender object** — each splat cloud is parented to an
+  Empty: move, rotate, scale, hide, duplicate as usual; reloads automatically
+  when you reopen the `.blend`
 
-## ใช้งาน
+## Installation
 
-1. กด **Import Splat** เลือกไฟล์ได้ 4 แบบ:
-   - `.ply` — 3DGS มาตรฐาน
-   - `.compressed.ply` — SuperSplat compressed (decode ในตัว ไม่ต้องแปลงก่อน)
-   - `.sog` — SOG v2 bundle (zip)
-   - `meta.json` — SOG v2 แบบแยกไฟล์ (webp อยู่โฟลเดอร์เดียวกัน)
-   - **Max Splats** — จำกัดจำนวน splat สำหรับฉากใหญ่มาก (0 = ทั้งหมด, เพดาน ~11.1 ล้าน)
-   - **Rotate to Z-up** — ไฟล์สแกนส่วนใหญ่เป็นแกน Y-down จะหมุนให้ตั้งตรงอัตโนมัติ
-2. จะได้ Empty หนึ่งตัวแทน splat — ย้าย/หมุน/สเกลได้ตามปกติ splat จะตามไปด้วย
-3. ปรับ **Splat Size** และ **Opacity** ได้จากแผงด้านข้าง
-4. เซฟไฟล์ .blend ได้ตามปกติ — เปิดกลับมา addon จะโหลด splat จากไฟล์เดิมให้อัตโนมัติ
+1. Download `pobim_splats.zip` from the
+   [latest release](https://github.com/POBIM/pobim-splats/releases/latest)
+2. In Blender: `Edit > Preferences > Add-ons > (top-right menu) > Install from Disk…`
+3. Enable **POBIM Splats**
+4. Open the panel: press **N** in the 3D viewport → **3DGS** tab
 
-### Measure & Scale (ปรับสเกลให้ตรงหน้างานจริง)
+Requires **Blender 4.2+** (tested on 4.5 LTS).
 
-สแกน 3DGS มักมีสเกลไม่ตรงหน่วยจริง เครื่องมือนี้แก้ให้:
+## Usage
 
-1. กดปุ่ม **Measure & Scale** ในกล่องของ splat นั้น
-2. คลิกซ้ายจุดแรก → คลิกซ้ายจุดที่สอง (เคอร์เซอร์จะ snap เข้าหา splat ใกล้สุด
-   มีวงแหวนแสดง และมีเส้น + ระยะโชว์ระหว่างลาก; คลิกขวา/Esc = ยกเลิก)
-3. ใส่ **ระยะจริง** ในหน้าต่างที่เด้งขึ้น → กด OK
-4. Splat จะถูกสเกลรอบจุดแรกที่คลิก (จุดแรกอยู่กับที่) — Ctrl+Z ย้อนได้
+Click **Import Splat** and pick a file:
 
-### ประสิทธิภาพ
-
-การเรียงลำดับความลึก (depth sort) รันใน**เธรดแยก** ไม่บล็อก viewport และเรียงเฉพาะเมื่อ
-ทิศกล้องหมุนเกิน ~1° — การแพน/ซูมไม่ต้องเรียงใหม่เลย ฉากระดับหลายล้าน splat
-จึงหมุนได้ลื่นโดยลำดับการ blend ตามทันภายในเสี้ยววินาที (ปรับ **Sort Interval** ได้)
-
-### สีให้ตรงกับ web viewer
-
-Blender เริ่มต้นใช้ view transform แบบ AgX/Filmic ซึ่งจะทำให้สีจางลง
-ให้ตั้ง `Render Properties > Color Management > View Transform = Standard`
-(addon แปลงสีเป็น linear ให้แล้วตอน import)
-
-### ไฟล์ที่รองรับ
-
-| ฟอร์แมต | สถานะ |
+| Format | Status |
 |---|---|
 | `.ply` (INRIA 3DGS, binary) | ✓ |
-| `.compressed.ply` (SuperSplat) | ✓ decode ในตัว |
-| `.sog` / `meta.json` (SOG v2) | ✓ decode ในตัว (ใช้ WebP codec ของ Blender) |
-| `.splat`, `.spz`, `.ksplat`, SOG v1 | ✗ แปลงก่อนด้วย [splat-transform](https://github.com/playcanvas/splat-transform): `npx @playcanvas/splat-transform input output.ply` |
+| `.compressed.ply` (SuperSplat) | ✓ decoded in-addon |
+| `.sog` / `meta.json` (SOG v2) | ✓ decoded in-addon (Blender's WebP codec) |
+| `.splat`, `.spz`, `.ksplat`, SOG v1 | ✗ convert first with [splat-transform](https://github.com/playcanvas/splat-transform): `npx @playcanvas/splat-transform input output.ply` |
 
-## ข้อจำกัดปัจจุบัน
+Import options: **Max Splats** (random subsample for huge scenes; 0 = all,
+hard cap ≈ 11.1M) and **Rotate to Z-up** (most scans are Y-down).
 
-- แสดงเฉพาะสี SH band 0 (ยังไม่มี view-dependent color; ข้อมูล shN ใน SOG ถูกข้าม)
-- เห็นเฉพาะใน **viewport** — การกด F12 render ด้วย EEVEE/Cycles จะยังไม่เห็น splat
-  (ใช้ Viewport Render Image/Animation ได้ หรือดู roadmap ใน docs/ARCHITECTURE.md)
-- กล้อง orthographic รองรับแบบประมาณ (Jacobian คงที่)
-- Measure & Scale จับจุดที่ศูนย์กลาง gaussian (สุ่มตัวอย่างสูงสุด 400k จุดตอน pick)
+Per-splat controls in the panel: **Splat Size**, **Opacity**, **Reload**,
+**Remove**, and **Measure & Scale**.
 
-## ทดสอบ
+### Measure & Scale
+
+Scans rarely come in real-world units. To fix that:
+
+1. Click **Measure & Scale** in the splat's panel box
+2. Left-click the first point, then the second — the cursor snaps to the
+   nearest splat with a ring indicator and a live distance readout
+   (right-click / Esc cancels)
+3. Enter the **real distance** in the dialog and confirm
+
+The cloud scales uniformly about the first picked point. Ctrl+Z undoes it.
+
+### Color tip
+
+Blender's default AgX view transform washes out splat colors. For colors that
+match web splat viewers, set
+`Render Properties > Color Management > View Transform = Standard`
+(the addon already converts colors to linear on import).
+
+## Current limitations
+
+- SH band 0 only (no view-dependent color yet; SOG `shN` data is skipped)
+- Viewport only — F12 renders (EEVEE/Cycles) don't include splats yet;
+  use Viewport Render Image/Animation, or see the
+  [roadmap](docs/ROADMAP.md)
+- Orthographic cameras use an approximate (constant) Jacobian
+- Picking snaps to gaussian centers (subsampled to 400k for speed)
+
+## Development
 
 ```bash
-python3 tests/test_ply_loader.py     # loader + compressed roundtrip (ไม่ต้องมี Blender)
-python3 tests/test_measure_math.py   # คณิต pick/scale (ไม่ต้องมี Blender)
-blender -b --factory-startup --python tests/smoke_test_blender.py # operators + registry
-blender --factory-startup --python tests/gpu_test_blender.py     # shader + GPU (ต้องมีจอ)
-blender --factory-startup --python tests/render_preview_blender.py  # ออกภาพ tests/preview.png
-python3 tests/make_test_ply.py torus.ply 500000                   # สร้างไฟล์ทดสอบ
-python3 tests/make_test_ply.py torus.compressed.ply 500000        # แบบ compressed
+python3 tests/test_ply_loader.py     # loaders + compressed roundtrip (no Blender needed)
+python3 tests/test_measure_math.py   # pick/scale math (no Blender needed)
+blender -b --factory-startup --python tests/smoke_test_blender.py   # operators + registry
+blender --factory-startup --python tests/gpu_test_blender.py        # shader + GPU (needs display)
+blender --factory-startup --python tests/render_preview_blender.py  # renders tests/preview.png
+python3 tests/make_test_ply.py torus.ply 500000                     # generate test data
 ```
 
-## โครงสร้าง
+Module map: `ply_loader.py` (PLY + compressed decode, bpy-free) ·
+`sog_format.py` / `sog_loader.py` (SOG v2) · `splat_gpu.py` (shader, draw
+handler, threaded sort) · `measure_math.py` / `measure.py` (Measure & Scale) ·
+`operators.py` / `ui.py` (UI). Details in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), plans in
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
-- `pobim_splats/ply_loader.py` — อ่าน PLY มาตรฐาน + decode compressed.ply (bpy-free)
-- `pobim_splats/sog_format.py` — คณิต decode SOG v2 (bpy-free)
-- `pobim_splats/sog_loader.py` — โหลด .sog/meta.json + decode webp ผ่าน Blender
-- `pobim_splats/splat_gpu.py` — shader, GPU resources, draw handler, threaded depth sort
-- `pobim_splats/measure_math.py` — คณิต pick/scale (bpy-free)
-- `pobim_splats/measure.py` — modal operator Measure & Scale + overlay
-- `pobim_splats/operators.py` — import / reload / remove
-- `pobim_splats/ui.py` — แผง N-panel
-- `docs/ARCHITECTURE.md` — สถาปัตยกรรมโดยละเอียด
-- `docs/ROADMAP.md` — แผนสู่เวอร์ชันขายจริง + เรื่อง license/ช่องทางขาย
+## Support ❤
 
-## License & Support
+Free and open source under **GPL-3.0** (see [LICENSE](LICENSE) and
+[THIRD_PARTY.md](THIRD_PARTY.md)) — free for personal and commercial use.
 
-โอเพนซอร์สภายใต้ **GNU GPL v3** (ดู `LICENSE`, เครดิตใน `THIRD_PARTY.md`)
-ใช้ฟรีทั้งงานส่วนตัวและงานพาณิชย์
+If this addon saves you time, consider
+**[sponsoring @POBIM](https://github.com/sponsors/POBIM)** — sponsorships fund
+the roadmap: F12 rendering, crop box, and view-dependent color (SH bands).
 
-ถ้า addon นี้ช่วยประหยัดเวลาคุณได้ สนับสนุนผู้พัฒนาได้ทาง **GitHub Sponsors**
-หรือ **Ko-fi** (ปุ่ม Sponsor บนหัว repo) — ทุกการสนับสนุนช่วยให้มีเวลาทำ
-ฟีเจอร์ใน `docs/ROADMAP.md` ต่อ (F12 render, crop box, SH bands)
+---
+
+## ภาษาไทย (สรุปย่อ)
+
+แสดงผล 3D Gaussian Splats ใน Blender ด้วย splat renderer จริง — เบาและสวย
+ระดับหลายล้าน splats รองรับ `.ply`, `.compressed.ply`, `.sog` โดยไม่ต้องแปลงไฟล์
+
+**ติดตั้ง**: โหลด zip จาก [Releases](https://github.com/POBIM/pobim-splats/releases/latest)
+→ `Edit > Preferences > Add-ons > Install from Disk…` → เปิดใช้งาน →
+กด **N** ใน viewport → แท็บ **3DGS**
+
+**Measure & Scale**: กดปุ่มในแผง → คลิกจุดสองจุดบน splat → ใส่ระยะจริง →
+โมเดลถูกปรับสเกลให้ตรงหน่วยจริง (Ctrl+Z ย้อนได้)
+
+**สีให้ตรงกับ web viewer**: ตั้ง `Color Management > View Transform = Standard`
+
+ถ้า addon นี้มีประโยชน์ สนับสนุนได้ที่
+[github.com/sponsors/POBIM](https://github.com/sponsors/POBIM) ครับ 🙏
