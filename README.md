@@ -83,7 +83,12 @@ persist across tool sessions and .blend save/load.
 Click **Edit Splats** in the splat's panel box to enter the editing tool
 (SuperSplat-style state flags, selection shown in yellow):
 
-- **Drag** a rectangle to select — **Shift** adds, **Ctrl** removes
+- **Six selection tools** (dropdown or hotkey, matching the SuperSplat
+  keys): **R** rectangle · **L** lasso · **P** polygon (Enter or click the
+  first vertex to close, Backspace steps back) · **B** brush (**[ ]**
+  resize) · **S** 3D sphere (surface-picked center, **[ ]** resize) ·
+  **C** 3D box (two surface-picked corners, object-aligned)
+- Every tool: plain drag/click = **set**, **Shift** adds, **Ctrl** removes
 - **A** select all · **Shift+A** none · **Ctrl+I** invert
 - **H** hide selected · **Alt+H** unhide all
 - **X / Del** delete selected (soft — undoable)

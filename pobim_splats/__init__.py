@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'POBIM Splats — 3D Gaussian Splatting Viewer',
     'author': 'POBIM',
-    'version': (0, 5, 0),
+    'version': (0, 6, 0),
     'blender': (4, 2, 0),
     'location': 'View3D > Sidebar (N) > POBIM3DGS',
     'description': 'Import and display 3D Gaussian Splatting .ply files with a real GPU splat renderer',
@@ -68,6 +68,18 @@ def register():
             ('CENTERS', 'Splat Centers', 'Snap เข้าหาศูนย์กลาง splat ที่ใกล้ที่สุด'),
         ),
         default='SURFACE')
+    bpy.types.Scene.pobim_splat_edit_tool = EnumProperty(
+        name='Select Tool',
+        description='เครื่องมือเลือก splat ในโหมดแก้ไข (กด R/L/P/B/S/C สลับได้ระหว่างแก้ไข)',
+        items=(
+            ('RECT', 'Rect', 'เลือกด้วยกรอบสี่เหลี่ยม (ลากเมาส์)'),
+            ('LASSO', 'Lasso', 'เลือกด้วยบ่วงวาดอิสระ'),
+            ('POLYGON', 'Polygon', 'เลือกด้วยรูปหลายเหลี่ยม (คลิกทีละจุด)'),
+            ('BRUSH', 'Brush', 'ทาสีเลือกด้วยพู่กันวงกลม'),
+            ('SPHERE', 'Sphere', 'เลือกด้วยทรงกลมในปริภูมิ 3 มิติ'),
+            ('BOX', 'Box', 'เลือกด้วยกล่องจากสองมุม (พิกัด local ของ splat)'),
+        ),
+        default='RECT')
     bpy.types.Scene.pobim_splats_aa = BoolProperty(
         name='Antialiasing (energy conserving)',
         description='ชดเชยความสว่างของ splat เล็กแบบ Mip-Splatting — ภาพไกลคมขึ้น '
@@ -119,5 +131,6 @@ def unregister():
     del bpy.types.Scene.pobim_splats_aa
     del bpy.types.Scene.pobim_splat_measure_kind
     del bpy.types.Scene.pobim_splat_measure_mode
+    del bpy.types.Scene.pobim_splat_edit_tool
     del bpy.types.Scene.pobim_splats_near_cull
     del bpy.types.Scene.pobim_splat_sort_interval

@@ -246,6 +246,17 @@ def main():
         assert 'torus' not in bpy.data.objects
     check('reload + remove operators', reload_and_remove)
 
+    def edit_tool_enum():
+        scene = bpy.context.scene
+        prop = scene.bl_rna.properties['pobim_splat_edit_tool']
+        items = [it.identifier for it in prop.enum_items]
+        assert items == ['RECT', 'LASSO', 'POLYGON', 'BRUSH', 'SPHERE', 'BOX'], items
+        assert prop.default == 'RECT', prop.default
+        scene.pobim_splat_edit_tool = 'BRUSH'
+        assert scene.pobim_splat_edit_tool == 'BRUSH', scene.pobim_splat_edit_tool
+        scene.pobim_splat_edit_tool = 'RECT'
+    check('edit tool enum registers with 6 items, round-trips', edit_tool_enum)
+
     check('unregister addon', pobim_splats.unregister)
 
     print()

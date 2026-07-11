@@ -66,6 +66,7 @@ class POBIM_PT_splats(bpy.types.Panel):
             op = row.operator('pobim_splats.edit_splats',
                               icon='EDITMODE_HLT', text='Edit Splats')
             op.uid = obj.pobim_splat_uid
+            row.prop(scene, 'pobim_splat_edit_tool', text='')
             op = row.operator('pobim_splats.export_ply',
                               icon='EXPORT', text='Export PLY')
             op.uid = obj.pobim_splat_uid
