@@ -302,6 +302,40 @@ def run_tests():
     assert edge_ext < 3.5 * center_ext, \
         f'edge splat smeared into a streak ({edge_ext:.0f}px vs {center_ext:.0f}px)'
 
+    # --- perspective tilt terms present ---------------------------------
+    # A needle elongated along the VIEW axis is a dot at screen center but
+    # must smear radially at the screen edge (the -f*x/z^2 Jacobian terms).
+    # A transposed Jacobian (textbook row-major layout fed to the
+    # column-major mat3 constructor) silently drops these terms: the edge
+    # needle stays a dot and grazing surfaces at wide-lens screen edges
+    # render wrong. This asserts the tilt terms actually contribute.
+    def needle_footprint(x_world):
+        cl = build_cloud(
+            np.array([[x_world, 0.0, 0.0]], np.float32),
+            np.array([[0.02, 0.02, 0.6]], np.float32),
+            np.array([[1, 0, 0, 0]], np.float32),
+            np.ones((1, 3), np.float32),
+            np.ones(1, np.float32))
+        sgx = splat_gpu.SplatGPU(cl)
+        vw = np.eye(4, dtype=np.float32)
+        vw[2, 3] = -6.0
+        pw = np.array([
+            [1.0, 0, 0, 0], [0, 1.0, 0, 0],
+            [0, 0, -1.02, -2.02], [0, 0, -1, 0]], np.float32)
+        img = render_single(sgx, vw, pw)
+        lit_idx = np.argwhere(img[..., 3] > 0.05)
+        if lit_idx.shape[0] == 0:
+            return 0.0
+        return float(max(lit_idx[:, 0].max() - lit_idx[:, 0].min(),
+                         lit_idx[:, 1].max() - lit_idx[:, 1].min()))
+
+    center_needle = needle_footprint(0.0)
+    edge_needle = needle_footprint(5.2)
+    log(f'OK perspective tilt: z-needle center={center_needle:.0f}px '
+        f'edge={edge_needle:.0f}px')
+    assert edge_needle > max(2.5 * center_needle, 12.0), \
+        'no radial smear at edge — perspective tilt terms missing (transposed J?)'
+
     pobim_splats.unregister()
     log('PASSED')
 

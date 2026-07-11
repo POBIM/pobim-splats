@@ -141,17 +141,21 @@ void main()
                  0.0, 0.0, 0.0);
     } else {
         // INRIA reference rasterizer: clamp the point used for the Jacobian
-        // to 1.3x the frustum edge. Without this, splats at the periphery of
-        // wide lenses get grossly over-stretched into radial streaks (the
-        // affine approximation of perspective diverges as x/z grows).
+        // to 1.3x the frustum edge (guards splats outside the frustum).
         float limx = 1.3 / u.projection[0][0];
         float limy = 1.3 / u.projection[1][1];
         float iz = 1.0 / cam.z;
         float tx = clamp(cam.x * iz, -limx, limx) * cam.z;
         float ty = clamp(cam.y * iz, -limy, limy) * cam.z;
-        J = mat3(fx * iz, 0.0, 0.0,
-                 0.0, fy * iz, 0.0,
-                 -fx * tx * iz * iz, -fy * ty * iz * iz, 0.0);
+        // LAYOUT MATTERS: the perspective tilt terms belong in the BOTTOM
+        // ROW (third component of columns 0/1), matching the engine and the
+        // INRIA CUDA rasterizer. With cov = J^T * Sigma * J, putting them in
+        // the right column (the textbook row-major form) silently drops the
+        // foreshortening — center splats render fine but periphery splats
+        // on wide lenses bloat into radial streaks.
+        J = mat3(fx * iz, 0.0, -fx * tx * iz * iz,
+                 0.0, fy * iz, -fy * ty * iz * iz,
+                 0.0, 0.0, 0.0);
     }
 
     mat3 Vrk = mat3(d1.x, d1.y, d1.z,
