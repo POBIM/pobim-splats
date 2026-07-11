@@ -92,4 +92,12 @@ python3 tests/make_test_ply.py torus.compressed.ply 500000        # แบบ co
 - `pobim_splats/measure.py` — modal operator Measure & Scale + overlay
 - `pobim_splats/operators.py` — import / reload / remove
 - `pobim_splats/ui.py` — แผง N-panel
-- `docs/ARCHITECTURE.md` — สถาปัตยกรรมโดยละเอียด + roadmap
+- `docs/ARCHITECTURE.md` — สถาปัตยกรรมโดยละเอียด
+- `docs/ROADMAP.md` — แผนสู่เวอร์ชันขายจริง + เรื่อง license/ช่องทางขาย
+
+## License
+
+GNU GPL v3 (ดู `LICENSE`) — เป็นข้อกำหนดของ Blender สำหรับ addon ที่ใช้ `bpy`
+การขายเชิงพาณิชย์ทำได้ตามปกติ (โมเดลเดียวกับ Blender Market) —
+รายละเอียดใน `docs/ROADMAP.md` ส่วน "เรื่อง License" และดู `THIRD_PARTY.md`
+สำหรับเครดิตสเปค/อัลกอริทึมที่อ้างอิง

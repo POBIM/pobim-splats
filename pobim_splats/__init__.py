@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'POBIM Splats — 3D Gaussian Splatting Viewer',
     'author': 'POBIM',
-    'version': (0, 1, 0),
+    'version': (0, 2, 0),
     'blender': (4, 2, 0),
     'location': 'View3D > Sidebar (N) > 3DGS',
     'description': 'Import and display 3D Gaussian Splatting .ply files with a real GPU splat renderer',
