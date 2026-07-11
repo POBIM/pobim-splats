@@ -78,6 +78,25 @@ persist across tool sessions and .blend save/load.
   last segment and the cloud rescales about that segment's first point
   (undoable). **Clear Measurements** in the panel wipes everything.
 
+### Edit Splats: select / hide / delete / export
+
+Click **Edit Splats** in the splat's panel box to enter the editing tool
+(SuperSplat-style state flags, selection shown in yellow):
+
+- **Drag** a rectangle to select — **Shift** adds, **Ctrl** removes
+- **A** select all · **Shift+A** none · **Ctrl+I** invert
+- **H** hide selected · **Alt+H** unhide all
+- **X / Del** delete selected (soft — undoable)
+- **Ctrl+Z / Ctrl+Shift+Z** undo/redo (tool-local history)
+- **Esc / right-click** exits; edit state persists in the .blend
+
+**Export PLY** writes the surviving (non-deleted) splats. From a standard
+`.ply` source the export is **lossless** — surviving rows are copied
+byte-for-byte from the original file (all attributes, including full SH).
+From `.compressed.ply`/`.sog` sources a standard `.ply` is synthesized from
+the decoded values. Subsampled imports (Max Splats) export only the loaded
+subset.
+
 ### Color tip
 
 Blender's default AgX view transform washes out splat colors. For colors that

@@ -187,6 +187,56 @@ def main():
         assert not obj.get('pobim_measures')
     check('measure store persists and clears', measure_store_roundtrip)
 
+    def edit_state_persist():
+        import numpy as np
+        from pobim_splats.splat_state import SplatState
+        obj = bpy.data.objects['torus']
+        entry = splat_gpu.REGISTRY[obj.pobim_splat_uid]
+        count = entry.cloud.count
+        state = SplatState(count)
+        state.select_indices(np.arange(0, count, 2))   # select half
+        selected = state.num_selected
+        state.delete_selected()
+        deleted = state.num_deleted
+        assert deleted == selected, (deleted, selected)
+        entry.state = state
+        obj['pobim_splat_state'] = state.serialize()
+        # a fresh (re)load must rebuild the entry AND restore the edit state
+        splat_gpu.load_entry_for_object(obj)
+        restored = splat_gpu.REGISTRY[obj.pobim_splat_uid]
+        assert restored.state is not None, 'edit state not restored on reload'
+        assert restored.state.flags.size == count
+        assert restored.state.num_deleted == deleted, \
+            (restored.state.num_deleted, deleted)
+    check('edit state persists through reload', edit_state_persist)
+
+    def export_survivors():
+        from pobim_splats.ply_loader import load_gaussian_ply
+        obj = bpy.data.objects['torus']
+        entry = splat_gpu.REGISTRY[obj.pobim_splat_uid]
+        deleted = entry.state.num_deleted if entry.state is not None else 0
+        count = obj.pobim_splat_count
+        out = os.path.join(tmp, 'export.ply')
+        result = bpy.ops.pobim_splats.export_ply(
+            filepath=out, uid=obj.pobim_splat_uid)
+        assert result == {'FINISHED'}, result
+        cloud = load_gaussian_ply(out)
+        assert cloud.count == count - deleted, (cloud.count, count, deleted)
+    check('export_ply writes surviving splats', export_survivors)
+
+    def edit_modal_registered():
+        assert hasattr(bpy.ops.pobim_splats, 'edit_splats'), 'operator not registered'
+        from pobim_splats.edit_tools import POBIM_OT_edit_splats
+        obj = bpy.data.objects['torus']
+        # background mode: no window/area for a modal op -> Blender short-circuits
+        # to PASS_THROUGH, or invoke's `area is None` guard returns CANCELLED.
+        # Either way it must not raise and must not leave the tool running.
+        result = bpy.ops.pobim_splats.edit_splats(
+            'INVOKE_DEFAULT', uid=obj.pobim_splat_uid)
+        assert result in ({'CANCELLED'}, {'PASS_THROUGH'}), result
+        assert POBIM_OT_edit_splats._running is False, 'tool left running'
+    check('edit_splats modal registers, cancels in background', edit_modal_registered)
+
     def reload_and_remove():
         obj = bpy.data.objects['torus']
         uid = obj.pobim_splat_uid

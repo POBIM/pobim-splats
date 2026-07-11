@@ -36,13 +36,18 @@ class SplatCloud:
     view-dependent SH contribution first and converts to linear afterwards.
     """
 
-    def __init__(self, positions, cov6, colors, opacities, sh=None, sh_bands=0):
+    def __init__(self, positions, cov6, colors, opacities, sh=None, sh_bands=0,
+                 source_indices=None):
         self.positions = positions    # (N, 3) float32, object space
         self.cov6 = cov6              # (N, 6) float32: xx, xy, xz, yy, yz, zz
         self.colors = colors          # (N, 3) float32, 0..1
         self.opacities = opacities    # (N,)   float32, 0..1
         self.sh = sh                  # (N, 3C) uint8 channel-major, or None
         self.sh_bands = sh_bands      # 0..3
+        # when subsampled (max_splats), the permutation of ORIGINAL file row
+        # indices that survived, so an exporter can map back to source rows;
+        # None when every row was loaded (identity mapping).
+        self.source_indices = source_indices
 
     @property
     def count(self):
@@ -165,12 +170,14 @@ def build_cloud(positions, scales, quat, colors, opacities,
     uint8, or None.
     """
     n = positions.shape[0]
+    source_indices = None
     if max_splats and n > max_splats:
         sel = np.random.default_rng(12345).permutation(n)[:max_splats]
         positions, scales, quat = positions[sel], scales[sel], quat[sel]
         colors, opacities = colors[sel], opacities[sel]
         if sh is not None:
             sh = sh[sel]
+        source_indices = sel
         n = max_splats
 
     quat = quat / (np.linalg.norm(quat, axis=1, keepdims=True) + 1e-12)
@@ -196,7 +203,13 @@ def build_cloud(positions, scales, quat, colors, opacities,
     return SplatCloud(
         np.ascontiguousarray(positions, dtype=np.float32), cov6,
         colors, np.ascontiguousarray(opacities, dtype=np.float32),
-        sh=sh, sh_bands=sh_bands)
+        sh=sh, sh_bands=sh_bands, source_indices=source_indices)
+
+
+def opacity_to_logit(opacities):
+    """Linear opacity (0..1) -> logit log(o/(1-o)), clipped to avoid infinities."""
+    o = np.clip(np.asarray(opacities, np.float32), 1e-6, 1.0 - 1e-6)
+    return np.log(o / (1.0 - o)).astype(np.float32)
 
 
 def _unpack_111011(packed):
@@ -210,10 +223,13 @@ def _unpack_111011(packed):
 CHUNK = 256  # splats per chunk in the compressed PLY format
 
 
-def _decode_compressed(parts, max_splats, max_sh_bands):
-    """Decode SuperSplat .compressed.ply (chunk min/max + packed uint32 vertex).
+def _decode_compressed_raw(parts, max_sh_bands):
+    """Decode SuperSplat .compressed.ply to full-count canonical arrays.
 
     Mirrors splat-transform's decompress-ply.ts, vectorized with numpy.
+    Returns (positions, scales, quat, colors, opacities, sh) for the full row
+    count with no subsampling and no SH quantization; sh is float32 (N, 3C)
+    channel-major truncated to max_sh_bands, or None.
     """
     chunks = parts['chunk']
     verts = parts['vertex']
@@ -285,8 +301,65 @@ def _decode_compressed(parts, max_splats, max_sh_bands):
             dst_c = min(c, SH_COEFFS[max_sh_bands])
             sh = truncate_sh(coeffs, c, dst_c)
 
+    return positions, scales, quat, colors, opacities, sh
+
+
+def _decode_compressed(parts, max_splats, max_sh_bands):
+    """Decode a compressed PLY into a SplatCloud (subsampled + SH quantized)."""
+    positions, scales, quat, colors, opacities, sh = _decode_compressed_raw(
+        parts, max_sh_bands)
     return build_cloud(positions, scales, quat, colors, opacities,
                        max_splats, sh=sh)
+
+
+def _compressed_to_canonical(parts):
+    """Decode a compressed PLY into the canonical dict used for re-export."""
+    positions, scales, quat, colors, opacities, sh = _decode_compressed_raw(
+        parts, max_sh_bands=3)
+    return {
+        'kind': 'canonical',
+        'positions': positions,
+        'scales_log': np.log(np.maximum(scales, 1e-30)).astype(np.float32),
+        'quat_wxyz': quat,
+        'f_dc': ((colors - 0.5) / SH_C0).astype(np.float32),
+        'opacity_logit': opacity_to_logit(opacities),
+        'sh': sh,
+        'count': int(positions.shape[0]),
+    }
+
+
+def load_raw_ply(filepath):
+    """Load a 3DGS PLY for lossless re-export, without decoding to a SplatCloud.
+
+    Standard PLY -> {'kind': 'ply', 'dtype': np.dtype, 'vertex': structured
+    ndarray (verbatim rows, no decode), 'count': int}.
+
+    Compressed PLY (chunk element present) cannot be re-emitted byte-for-byte,
+    so it is decoded to canonical arrays instead:
+    {'kind': 'canonical', 'positions' (N,3), 'scales_log' (N,3),
+     'quat_wxyz' (N,4), 'f_dc' (N,3), 'opacity_logit' (N,),
+     'sh' (float32 (N,3C) channel-major) or None, 'count': int}.
+    """
+    elements, offset = _parse_header(filepath)
+    names = [name for name, _, _ in elements]
+
+    if 'chunk' in names and 'vertex' in names:
+        parts = _read_elements(filepath, elements, offset)
+        return _compressed_to_canonical(parts)
+
+    if not elements or elements[0][0] != 'vertex' or elements[0][1] <= 0:
+        raise ValueError('PLY ไม่มี vertex element นำหน้า — ไม่ใช่ไฟล์ 3DGS ที่รองรับ')
+    _, count, dtype = elements[0]
+
+    missing = [r for r in _REQUIRED if r not in (dtype.names or ())]
+    if missing:
+        raise ValueError(f'ไม่ใช่ไฟล์ 3DGS PLY (ขาด property: {", ".join(missing)})')
+
+    vertex = np.fromfile(filepath, dtype=dtype, count=count, offset=offset)
+    if vertex.shape[0] < count:
+        raise ValueError(f'ไฟล์สั้นกว่าที่ header ระบุ ({vertex.shape[0]}/{count} splats)')
+
+    return {'kind': 'ply', 'dtype': dtype, 'vertex': vertex, 'count': int(count)}
 
 
 def load_gaussian_ply(filepath, max_splats=0, max_sh_bands=3):

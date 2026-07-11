@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'POBIM Splats — 3D Gaussian Splatting Viewer',
     'author': 'POBIM',
-    'version': (0, 4, 3),
+    'version': (0, 5, 0),
     'blender': (4, 2, 0),
     'location': 'View3D > Sidebar (N) > POBIM3DGS',
     'description': 'Import and display 3D Gaussian Splatting .ply files with a real GPU splat renderer',
@@ -13,7 +13,7 @@ from bpy.app.handlers import persistent
 from bpy.props import (
     BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty)
 
-from . import measure, operators, splat_gpu, ui
+from . import edit_tools, measure, operators, splat_gpu, ui
 
 
 def _redraw(self, context):
@@ -85,7 +85,7 @@ def register():
                     'และเรียงเฉพาะเมื่อกล้องหมุนเกิน ~1°)',
         default=0.2, min=0.0, max=5.0)
 
-    for cls in operators.CLASSES + measure.CLASSES + ui.CLASSES:
+    for cls in operators.CLASSES + measure.CLASSES + edit_tools.CLASSES + ui.CLASSES:
         bpy.utils.register_class(cls)
 
     splat_gpu.register_draw_handler()
@@ -102,7 +102,7 @@ def unregister():
         bpy.app.handlers.load_post.remove(_on_load_post)
     splat_gpu.unregister_draw_handler()
 
-    for cls in reversed(operators.CLASSES + measure.CLASSES + ui.CLASSES):
+    for cls in reversed(operators.CLASSES + measure.CLASSES + edit_tools.CLASSES + ui.CLASSES):
         bpy.utils.unregister_class(cls)
 
     del bpy.types.Object.pobim_splat_uid

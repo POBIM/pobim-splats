@@ -11,7 +11,7 @@ import zipfile
 import bpy
 import numpy as np
 
-from .sog_format import decode_sog
+from .sog_format import decode_sog, decode_sog_canonical
 
 
 def _load_webp_rgba(filepath):
@@ -33,7 +33,8 @@ def _load_webp_rgba(filepath):
     return rgba[::-1]  # Blender rows are bottom-up; SOG raster is top-down
 
 
-def _load_from_dir(meta_path, max_splats, max_sh_bands):
+def _gather_from_dir(meta_path, max_sh_bands):
+    """Read meta.json and its WebP textures from an unbundled directory."""
     with open(meta_path, 'r', encoding='utf-8') as f:
         meta = json.load(f)
 
@@ -47,13 +48,13 @@ def _load_from_dir(meta_path, max_splats, max_sh_bands):
             if name not in textures:
                 textures[name] = _load_webp_rgba(os.path.join(base, name))
 
-    return decode_sog(meta, textures, max_splats, max_sh_bands)
+    return meta, textures
 
 
-def load_sog(filepath, max_splats=0, max_sh_bands=3):
-    """Load a SOG scene from a bundled .sog (zip) or an unbundled meta.json."""
+def _open_sog(filepath, fn):
+    """Resolve a .sog (zip) or .json path to a meta.json dir and run fn(meta_path)."""
     if filepath.lower().endswith('.json'):
-        return _load_from_dir(filepath, max_splats, max_sh_bands)
+        return fn(filepath)
 
     if not zipfile.is_zipfile(filepath):
         raise ValueError('ไฟล์ .sog ไม่ใช่ zip bundle ที่ถูกต้อง')
@@ -65,6 +66,25 @@ def load_sog(filepath, max_splats=0, max_sh_bands=3):
         meta_path = os.path.join(tmp, 'meta.json')
         if not os.path.exists(meta_path):
             raise ValueError('.sog bundle ไม่มี meta.json')
-        return _load_from_dir(meta_path, max_splats, max_sh_bands)
+        return fn(meta_path)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def load_sog(filepath, max_splats=0, max_sh_bands=3):
+    """Load a SOG scene from a bundled .sog (zip) or an unbundled meta.json."""
+    def decode(meta_path):
+        meta, textures = _gather_from_dir(meta_path, max_sh_bands)
+        return decode_sog(meta, textures, max_splats, max_sh_bands)
+    return _open_sog(filepath, decode)
+
+
+def load_raw_sog(filepath, max_sh_bands=3):
+    """Load a SOG scene into the canonical dict used for lossy re-export to PLY.
+
+    Same shape as ply_loader.load_raw_ply's 'canonical' result.
+    """
+    def decode(meta_path):
+        meta, textures = _gather_from_dir(meta_path, max_sh_bands)
+        return decode_sog_canonical(meta, textures, max_sh_bands)
+    return _open_sog(filepath, decode)

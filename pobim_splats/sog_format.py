@@ -11,7 +11,8 @@
 
 import numpy as np
 
-from .ply_loader import SH_C0, SH_COEFFS, build_cloud
+from .ply_loader import (
+    SH_C0, SH_COEFFS, build_cloud, opacity_to_logit)
 
 # for largest component m (0..3 = w,x,y,z), the three packed values fill
 # the remaining quaternion slots in ascending index order
@@ -34,12 +35,12 @@ def _texel_data(rgba, count, name):
     return flat[:count]
 
 
-def decode_sog(meta, textures, max_splats=0, max_sh_bands=3):
-    """Decode SOG v2 into a SplatCloud.
+def _decode_sog_arrays(meta, textures, max_sh_bands):
+    """Decode SOG v2 into full-count canonical arrays (no subsampling).
 
-    meta: parsed meta.json dict.
-    textures: dict filename -> (H, W, 4) uint8 array in TOP-DOWN raster order.
-    max_sh_bands: highest SH band to decode from the optional shN section.
+    Returns (positions, scales, quat, colors, opacities, sh) where scales are
+    LINEAR (already exp'd), colors are 0..1 in SH color space, opacities are
+    0..1, and sh is float32 (N, 3C) channel-major or None.
     """
     version = meta.get('version')
     if version != 2:
@@ -135,5 +136,37 @@ def decode_sog(meta, textures, max_splats=0, max_sh_bands=3):
             sh = np.concatenate(
                 [coeffs[:, :, 0], coeffs[:, :, 1], coeffs[:, :, 2]], axis=1)
 
+    return positions, scales, quat, colors, opacities, sh
+
+
+def decode_sog(meta, textures, max_splats=0, max_sh_bands=3):
+    """Decode SOG v2 into a SplatCloud.
+
+    meta: parsed meta.json dict.
+    textures: dict filename -> (H, W, 4) uint8 array in TOP-DOWN raster order.
+    max_sh_bands: highest SH band to decode from the optional shN section.
+    """
+    positions, scales, quat, colors, opacities, sh = _decode_sog_arrays(
+        meta, textures, max_sh_bands)
     return build_cloud(positions, scales, quat, colors, opacities,
                        max_splats, sh=sh)
+
+
+def decode_sog_canonical(meta, textures, max_sh_bands=3):
+    """Decode SOG v2 into the canonical dict used for re-export.
+
+    Same shape as ply_loader.load_raw_ply's 'canonical' result:
+    scales stored as log, colors as f_dc SH0 coefficients, opacity as logit.
+    """
+    positions, scales, quat, colors, opacities, sh = _decode_sog_arrays(
+        meta, textures, max_sh_bands)
+    return {
+        'kind': 'canonical',
+        'positions': positions,
+        'scales_log': np.log(np.maximum(scales, 1e-30)).astype(np.float32),
+        'quat_wxyz': quat,
+        'f_dc': ((colors - 0.5) / SH_C0).astype(np.float32),
+        'opacity_logit': opacity_to_logit(opacities),
+        'sh': sh,
+        'count': int(positions.shape[0]),
+    }

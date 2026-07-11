@@ -62,5 +62,19 @@ class POBIM_PT_splats(bpy.types.Panel):
                                   icon='TRASH', text='Clear Measurements')
                 op.uid = obj.pobim_splat_uid
 
+            row = box.row(align=True)
+            op = row.operator('pobim_splats.edit_splats',
+                              icon='EDITMODE_HLT', text='Edit Splats')
+            op.uid = obj.pobim_splat_uid
+            op = row.operator('pobim_splats.export_ply',
+                              icon='EXPORT', text='Export PLY')
+            op.uid = obj.pobim_splat_uid
+            state = entry.state
+            if state is not None and (state.num_selected or state.num_hidden
+                                      or state.num_deleted):
+                box.label(text=f'เลือก {state.num_selected:,} · '
+                               f'ซ่อน {state.num_hidden:,} · '
+                               f'ลบ {state.num_deleted:,}', icon='EDITMODE_HLT')
+
 
 CLASSES = (POBIM_PT_splats,)

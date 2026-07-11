@@ -40,13 +40,20 @@ def run_tests():
     write_gaussian_ply(ply_path, *make_torus_splats(100_000))
     cloud = load_gaussian_ply(ply_path)
 
-    def make_ubo(view, proj, size, sh_bands=0, sh_width=0, cam=None):
+    def make_ubo(view, proj, size, sh_bands=0, sh_width=0, cam=None, sel4=None):
         params = np.array([size, size, 1.0, 1.0, 0.0,
                            sh_bands, sh_width, 0.0], np.float32)
         if cam is None:
             cam = np.linalg.inv(view)[:3, 3]
         cam4 = np.array([cam[0], cam[1], cam[2], 0.0], np.float32)
-        data = np.concatenate([view.T.ravel(), proj.T.ravel(), params, cam4])
+        # selColor.a defaults to 0 -> shader skips the state fetch, so every
+        # existing test renders exactly as before with a dummy stateTex bound
+        if sel4 is None:
+            sel4 = np.zeros(4, np.float32)
+        else:
+            sel4 = np.asarray(sel4, np.float32)
+        data = np.concatenate([view.T.ravel(), proj.T.ravel(),
+                               params, cam4, sel4])
         return gpu.types.GPUUniformBuf(splat_gpu._np_buffer('FLOAT', data))
 
     shader = splat_gpu.get_shader()
@@ -89,6 +96,7 @@ def run_tests():
         shader.uniform_sampler('dataTex', sg.data_tex)
         shader.uniform_sampler('orderTex', sg.order_tex)
         shader.uniform_sampler('shTex', sg.sh_tex if sg.sh_tex else sg.data_tex)
+        shader.uniform_sampler('stateTex', sg.data_tex)
         sg.batch.draw(shader)
         gpu.state.depth_mask_set(True)
         gpu.state.depth_test_set('NONE')
@@ -145,6 +153,7 @@ def run_tests():
             shader.uniform_sampler('dataTex', sg2.data_tex)
             shader.uniform_sampler('orderTex', sg2.order_tex)
             shader.uniform_sampler('shTex', sg2.sh_tex)
+            shader.uniform_sampler('stateTex', sg2.data_tex)
             sg2.batch.draw(shader)
             gpu.state.blend_set('NONE')
             raw2 = fb2.read_color(0, 0, 128, 128, 4, 0, 'FLOAT')
@@ -184,6 +193,7 @@ def run_tests():
         pick_shader.uniform_sampler('dataTex', sg.data_tex)
         pick_shader.uniform_sampler('orderTex', sg.order_tex)
         pick_shader.uniform_sampler('shTex', sg.data_tex)
+        pick_shader.uniform_sampler('stateTex', sg.data_tex)
         sg.batch.draw(pick_shader)
         gpu.state.depth_mask_set(True)
         gpu.state.depth_test_set('NONE')
@@ -241,6 +251,7 @@ def run_tests():
             shader.uniform_sampler('dataTex', sgx.data_tex)
             shader.uniform_sampler('orderTex', sgx.order_tex)
             shader.uniform_sampler('shTex', sgx.data_tex)
+            shader.uniform_sampler('stateTex', sgx.data_tex)
             sgx.batch.draw(shader)
             gpu.state.blend_set('NONE')
             rawx = fbx.read_color(0, 0, SIZE, SIZE, 4, 0, 'FLOAT')
@@ -335,6 +346,91 @@ def run_tests():
         f'edge={edge_needle:.0f}px')
     assert edge_needle > max(2.5 * center_needle, 12.0), \
         'no radial smear at edge — perspective tilt terms missing (transposed J?)'
+
+    # --- per-splat edit state (select / hide / delete) ------------------
+    # Select the first half of a torus, tint them, and verify the selection
+    # tint raises red; then delete (and separately hide) the selection and
+    # verify the drawn coverage drops the same way for both.
+    from pobim_splats.splat_state import SplatState
+
+    sgS = splat_gpu.SplatGPU(cloud)
+    nS = sgS.count
+    stS = SplatState(nS)
+    # a SPATIAL half (one side of the ring) so deleting it clears a
+    # contiguous screen region — a random index-half just thins the dense
+    # torus without opening holes, so coverage would barely move
+    half = np.nonzero(sgS.positions[:, 0] > 0.0)[0].astype(np.int64)
+    ch = stS.select_indices(half, 'set')
+    assert ch.size == half.size, 'select_indices did not report all changes'
+
+    SEL = (1.0, 0.5, 0.0, 1.0)   # orange highlight for a clear red shift
+
+    def render_state(sgx, state_tex, sel4):
+        vw = np.eye(4, dtype=np.float32)
+        vw[2, 3] = -8.0
+        f = 2.0
+        pj = np.array([
+            [f, 0, 0, 0], [0, f, 0, 0],
+            [0, 0, -1.02, -2.02], [0, 0, -1, 0]], np.float32)
+        sgx.sort_if_needed(vw, 0.0)
+        dl = _time.monotonic() + 10.0
+        while sgx._sort_result is None and _time.monotonic() < dl:
+            _time.sleep(0.01)
+        sgx.sort_if_needed(vw, 0.0)
+        offsx = gpu.types.GPUOffScreen(256, 256)
+        with offsx.bind():
+            fbx = gpu.state.active_framebuffer_get()
+            fbx.clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
+            gpu.state.blend_set('ALPHA')
+            gpu.state.depth_test_set('LESS_EQUAL')
+            gpu.state.depth_mask_set(False)
+            ubox = make_ubo(vw, pj, 256, sel4=sel4)
+            shader.bind()
+            shader.uniform_block('u', ubox)
+            shader.uniform_sampler('dataTex', sgx.data_tex)
+            shader.uniform_sampler('orderTex', sgx.order_tex)
+            shader.uniform_sampler('shTex', sgx.data_tex)
+            shader.uniform_sampler('stateTex', state_tex if state_tex else sgx.data_tex)
+            sgx.batch.draw(shader)
+            gpu.state.depth_mask_set(True)
+            gpu.state.depth_test_set('NONE')
+            gpu.state.blend_set('NONE')
+            rawx = fbx.read_color(0, 0, 256, 256, 4, 0, 'FLOAT')
+            out = np.array(rawx.to_list(), np.float32).reshape(256, 256, 4)
+        offsx.free()
+        return out
+
+    sgS.upload_state(stS.flags)
+
+    # same geometry rendered with and without the tint (a=0 skips the fetch)
+    base = render_state(sgS, sgS.state_tex, (0.0, 0.0, 0.0, 0.0))
+    tint = render_state(sgS, sgS.state_tex, SEL)
+    red_base = float(base[base[..., 3] > 0.1][:, 0].mean())
+    red_tint = float(tint[tint[..., 3] > 0.1][:, 0].mean())
+    log(f'OK selection tint: mean red {red_base:.3f} -> {red_tint:.3f}')
+    assert red_tint > red_base + 0.02, 'selection tint did not raise red'
+
+    cov_sel = float((tint[..., 3] > 0.01).mean())   # nothing deleted yet
+
+    # delete the selection and re-upload: hidden/deleted are culled (a>0.5)
+    stS.delete_selected()
+    sgS.upload_state(stS.flags)
+    deleted = render_state(sgS, sgS.state_tex, SEL)
+    cov_del = float((deleted[..., 3] > 0.01).mean())
+    log(f'OK delete coverage: {cov_sel:.1%} -> {cov_del:.1%}')
+    assert cov_del < cov_sel * 0.9, \
+        f'coverage did not drop after delete ({cov_sel:.1%} -> {cov_del:.1%})'
+
+    # hiding the same splats must look like deleting them
+    stH = SplatState(nS)
+    stH.select_indices(half, 'set')
+    stH.hide_selected()
+    sgS.upload_state(stH.flags)
+    hidden = render_state(sgS, sgS.state_tex, SEL)
+    cov_hid = float((hidden[..., 3] > 0.01).mean())
+    log(f'OK hidden coverage: {cov_hid:.1%} (delete was {cov_del:.1%})')
+    assert abs(cov_hid - cov_del) < 0.03, \
+        f'hidden ({cov_hid:.1%}) does not match deleted ({cov_del:.1%})'
 
     pobim_splats.unregister()
     log('PASSED')

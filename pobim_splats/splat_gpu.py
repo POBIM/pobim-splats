@@ -33,6 +33,10 @@ ORDER_TEX_WIDTH = 2048
 MAX_TEX_HEIGHT = 16384
 MAX_SPLATS = SPLATS_PER_ROW * MAX_TEX_HEIGHT  # ~11.1M
 
+# tint applied to selected splats — POBIMStudio's default selected colour
+# (DEFAULT_SELECTED_CLR in the web editor's scene-config.ts: pure yellow)
+SELECTED_COLOR = (1.0, 1.0, 0.0)
+
 VERT_SRC = """
 const vec2 kCorners[4] = vec2[4](
     vec2(-2.0, -2.0), vec2(2.0, -2.0), vec2(2.0, 2.0), vec2(-2.0, 2.0));
@@ -105,6 +109,18 @@ void main()
     // order texture is R32F: float32 holds integers exactly up to 2^24,
     // above our MAX_SPLATS cap (Blender's Python API can only upload FLOAT buffers)
     int splat = int(texelFetch(orderTex, ivec2(quad % 2048, quad / 2048), 0).r + 0.5);
+
+    // per-splat edit state (selection / hidden / deleted). selColor.a is 0
+    // when no state texture is bound, so untouched clouds pay zero cost.
+    int stFlags = 0;
+    if (u.selColor.a > 0.5) {
+        float st = texelFetch(stateTex, ivec2(splat % 2048, splat / 2048), 0).r;
+        stFlags = int(st + 0.5);
+        if ((stFlags & 6) != 0) {   // HIDDEN (2) | DELETED (4)
+            emitDegenerate();
+            return;
+        }
+    }
 
     int base = splat * 3;
     vec4 d0 = texelFetch(dataTex, ivec2(base % 2046, base / 2046), 0);
@@ -245,6 +261,12 @@ void main()
                   step(vec3(0.04045), rgb));
     }
 
+    // tint selected splats — applied after the sRGB conversion so the
+    // highlight colour lands in the same space Blender then displays
+    if ((stFlags & 1) != 0) {
+        rgb = mix(rgb, u.selColor.rgb, 0.55);
+    }
+
     vColor = vec4(rgb, d0.w * u.params.w * aaFactor);
     vec2 c = kCorners[corner];
     vQuad = c;
@@ -315,11 +337,13 @@ def _build_shader(frag_src, iface_name):
         '  vec4 params;'    # viewport w, viewport h, size multiplier, opacity multiplier
         '  vec4 params2;'   # aa flag, sh bands, sh tex width, srgb flag
         '  vec4 camPos;'    # camera position in object space (for SH)
+        '  vec4 selColor;'  # selected-splat tint rgb; a>0.5 = state tex bound
         '};')
     info.uniform_buf(0, 'SplatUniforms', 'u')
     info.sampler(0, 'FLOAT_2D', 'dataTex')
     info.sampler(1, 'FLOAT_2D', 'orderTex')
     info.sampler(2, 'FLOAT_2D', 'shTex')
+    info.sampler(3, 'FLOAT_2D', 'stateTex')
     info.vertex_in(0, 'FLOAT', 'quadId')
     info.vertex_in(1, 'FLOAT', 'cornerId')
     iface = gpu.types.GPUStageInterfaceInfo(iface_name)
@@ -433,6 +457,10 @@ class SplatGPU:
 
         self.order_rows = (n + ORDER_TEX_WIDTH - 1) // ORDER_TEX_WIDTH
         self.order_tex = None
+        # per-splat edit-state texture (R32F, one texel/splat), uploaded
+        # lazily from a SplatState and refreshed on version bumps
+        self.state_tex = None
+        self.state_version = -1
         self.last_sort_time = 0.0
         self._applied_dir = None      # object-space view dir of applied order
         self._sort_pending = False    # a worker thread is running
@@ -443,6 +471,15 @@ class SplatGPU:
         padded = np.zeros(self.order_rows * ORDER_TEX_WIDTH, np.float32)
         padded[:self.count] = order.astype(np.float32)
         self.order_tex = gpu.types.GPUTexture(
+            (ORDER_TEX_WIDTH, self.order_rows), format='R32F',
+            data=_np_buffer('FLOAT', padded))
+
+    def upload_state(self, flags):
+        """Upload per-splat edit flags into an R32F texture (value =
+        float(flags)), addressed the same way as the order texture."""
+        padded = np.zeros(self.order_rows * ORDER_TEX_WIDTH, np.float32)
+        padded[:self.count] = flags.astype(np.float32)
+        self.state_tex = gpu.types.GPUTexture(
             (ORDER_TEX_WIDTH, self.order_rows), format='R32F',
             data=_np_buffer('FLOAT', padded))
 
@@ -518,6 +555,7 @@ class SplatEntry:
         self.cloud = cloud
         self.gpu = None
         self.error = None
+        self.state = None   # SplatState, created lazily on first edit
 
 
 # uid -> SplatEntry (session state; rebuilt from object properties on file open)
@@ -610,14 +648,27 @@ def render_depth_map(view, proj, width, height):
                     near_cull = getattr(
                         bpy.context.scene, 'pobim_splats_near_cull', 0.1)
                     cam4 = np.array([0.0, 0.0, 0.0, near_cull], np.float32)
+
+                    # honour hidden/deleted edits in the depth pick too
+                    if (entry.state is not None and
+                            entry.state.version != sg.state_version):
+                        sg.upload_state(entry.state.flags)
+                        sg.state_version = entry.state.version
+                    has_state = entry.state is not None and sg.state_tex is not None
+                    sel4 = np.array([SELECTED_COLOR[0], SELECTED_COLOR[1],
+                                     SELECTED_COLOR[2], 1.0 if has_state else 0.0],
+                                    np.float32)
+
                     ubo = gpu.types.GPUUniformBuf(_np_buffer(
                         'FLOAT',
-                        np.concatenate([mv.T.ravel(), proj.T.ravel(), params, cam4])))
+                        np.concatenate([mv.T.ravel(), proj.T.ravel(),
+                                        params, cam4, sel4])))
                     shader.bind()
                     shader.uniform_block('u', ubo)
                     shader.uniform_sampler('dataTex', sg.data_tex)
                     shader.uniform_sampler('orderTex', sg.order_tex)
                     shader.uniform_sampler('shTex', sg.data_tex)
+                    shader.uniform_sampler('stateTex', sg.state_tex if sg.state_tex else sg.data_tex)
                     sg.batch.draw(shader)
             finally:
                 gpu.state.depth_mask_set(True)
@@ -704,7 +755,19 @@ def _draw_callback():
             near_cull = getattr(scene, 'pobim_splats_near_cull', 0.1)
             cam4 = np.array([cam_obj[0], cam_obj[1], cam_obj[2], near_cull],
                             np.float32)
-            ubo_data = np.concatenate([mv.T.ravel(), proj.T.ravel(), params, cam4])
+
+            # refresh the edit-state texture when the SplatState changed;
+            # selColor.a flags the shader to sample it (0 = untouched cloud)
+            if entry.state is not None and entry.state.version != sg.state_version:
+                sg.upload_state(entry.state.flags)
+                sg.state_version = entry.state.version
+            has_state = entry.state is not None and sg.state_tex is not None
+            sel4 = np.array([SELECTED_COLOR[0], SELECTED_COLOR[1],
+                             SELECTED_COLOR[2], 1.0 if has_state else 0.0],
+                            np.float32)
+
+            ubo_data = np.concatenate([mv.T.ravel(), proj.T.ravel(),
+                                       params, cam4, sel4])
             ubo = gpu.types.GPUUniformBuf(_np_buffer('FLOAT', ubo_data))
 
             shader.bind()
@@ -712,6 +775,7 @@ def _draw_callback():
             shader.uniform_sampler('dataTex', sg.data_tex)
             shader.uniform_sampler('orderTex', sg.order_tex)
             shader.uniform_sampler('shTex', sg.sh_tex if sg.sh_tex else sg.data_tex)
+            shader.uniform_sampler('stateTex', sg.state_tex if sg.state_tex else sg.data_tex)
             sg.batch.draw(shader)
     finally:
         gpu.state.depth_mask_set(True)
@@ -757,7 +821,22 @@ def load_entry_for_object(obj):
         max_sh_bands=obj.pobim_splat_shmax)
     obj.pobim_splat_count = cloud.count
     obj.pobim_splat_sh_loaded = cloud.sh_bands
-    REGISTRY[obj.pobim_splat_uid] = SplatEntry(obj.pobim_splat_uid, cloud)
+    entry = SplatEntry(obj.pobim_splat_uid, cloud)
+    # restore serialized per-splat edit state; a count mismatch (Max Splats
+    # changed, file re-pointed) or corrupt payload raises — drop the stale
+    # property instead of decoding garbage flags into the export mask
+    s = obj.get('pobim_splat_state')
+    if s:
+        try:
+            from .splat_state import SplatState  # lazy: avoids import cycle
+            entry.state = SplatState.deserialize(s, cloud.count)
+        except Exception as e:
+            print(f'[pobim_splats] discarding stale edit state for {obj.name}: {e}')
+            try:
+                del obj['pobim_splat_state']
+            except Exception:
+                pass
+    REGISTRY[obj.pobim_splat_uid] = entry
     return cloud
 
 
