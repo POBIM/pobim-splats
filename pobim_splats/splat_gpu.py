@@ -114,8 +114,11 @@ void main()
     vec4 cam = u.modelView * vec4(d0.xyz, 1.0);
     bool ortho = u.projection[3][3] == 1.0;
 
-    // behind the camera (perspective only) — engine gsplatCenter.js
-    if (!ortho && cam.z > 0.0) {
+    // behind the camera, and closer than the near-cull distance
+    // (u.camPos.w): indoor scans carry floater gaussians along the capture
+    // path that smear across the whole screen when the camera walks through
+    // them — web viewers hide these behind a larger camera near plane
+    if (!ortho && cam.z > -u.camPos.w) {
         emitDegenerate();
         return;
     }
@@ -137,10 +140,18 @@ void main()
                  0.0, fy, 0.0,
                  0.0, 0.0, 0.0);
     } else {
+        // INRIA reference rasterizer: clamp the point used for the Jacobian
+        // to 1.3x the frustum edge. Without this, splats at the periphery of
+        // wide lenses get grossly over-stretched into radial streaks (the
+        // affine approximation of perspective diverges as x/z grows).
+        float limx = 1.3 / u.projection[0][0];
+        float limy = 1.3 / u.projection[1][1];
         float iz = 1.0 / cam.z;
+        float tx = clamp(cam.x * iz, -limx, limx) * cam.z;
+        float ty = clamp(cam.y * iz, -limy, limy) * cam.z;
         J = mat3(fx * iz, 0.0, 0.0,
                  0.0, fy * iz, 0.0,
-                 -fx * cam.x * iz * iz, -fy * cam.y * iz * iz, 0.0);
+                 -fx * tx * iz * iz, -fy * ty * iz * iz, 0.0);
     }
 
     mat3 Vrk = mat3(d1.x, d1.y, d1.z,
@@ -584,7 +595,9 @@ def render_depth_map(view, proj, width, height):
                         getattr(obj, 'pobim_splat_scale', 1.0),
                         getattr(obj, 'pobim_splat_opacity', 1.0),
                         0.0, 0.0, 0.0, 0.0], np.float32)
-                    cam4 = np.zeros(4, np.float32)
+                    near_cull = getattr(
+                        bpy.context.scene, 'pobim_splats_near_cull', 0.1)
+                    cam4 = np.array([0.0, 0.0, 0.0, near_cull], np.float32)
                     ubo = gpu.types.GPUUniformBuf(_np_buffer(
                         'FLOAT',
                         np.concatenate([mv.T.ravel(), proj.T.ravel(), params, cam4])))
@@ -676,7 +689,9 @@ def _draw_callback():
                 sh_bands,
                 sg.sh_width,
                 1.0 if getattr(obj, 'pobim_splat_srgb', True) else 0.0], np.float32)
-            cam4 = np.array([cam_obj[0], cam_obj[1], cam_obj[2], 0.0], np.float32)
+            near_cull = getattr(scene, 'pobim_splats_near_cull', 0.1)
+            cam4 = np.array([cam_obj[0], cam_obj[1], cam_obj[2], near_cull],
+                            np.float32)
             ubo_data = np.concatenate([mv.T.ravel(), proj.T.ravel(), params, cam4])
             ubo = gpu.types.GPUUniformBuf(_np_buffer('FLOAT', ubo_data))
 

@@ -20,6 +20,7 @@ class POBIM_PT_splats(bpy.types.Panel):
         row.prop(scene, 'pobim_splats_enabled', text='Show Splats', toggle=True)
         layout.prop(scene, 'pobim_splat_sort_interval')
         layout.prop(scene, 'pobim_splats_aa', text='Energy-Conserving AA')
+        layout.prop(scene, 'pobim_splats_near_cull')
 
         splats = [obj for obj in scene.objects if obj.pobim_splat_uid]
         if not splats:

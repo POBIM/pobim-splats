@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'POBIM Splats — 3D Gaussian Splatting Viewer',
     'author': 'POBIM',
-    'version': (0, 4, 0),
+    'version': (0, 4, 1),
     'blender': (4, 2, 0),
     'location': 'View3D > Sidebar (N) > POBIM3DGS',
     'description': 'Import and display 3D Gaussian Splatting .ply files with a real GPU splat renderer',
@@ -73,6 +73,12 @@ def register():
         description='ชดเชยความสว่างของ splat เล็กแบบ Mip-Splatting — ภาพไกลคมขึ้น '
                     'แต่พื้นผิวจะโปร่งกว่าโหมดปกติ (ปิด = look แบบ PlayCanvas/SuperSplat)',
         default=False, update=_redraw)
+    bpy.types.Scene.pobim_splats_near_cull = FloatProperty(
+        name='Near Cull (m)',
+        description='ซ่อน splat ที่อยู่ใกล้กล้องกว่าระยะนี้ — สแกน indoor มัก'
+                    'มีก้อนลอย (floater) ตามเส้นทางถ่ายที่บังจอเป็นแผ่นเบลอ '
+                    'เพิ่มค่านี้เพื่อตัดทิ้งแบบเดียวกับ near plane ของ web viewer',
+        default=0.1, min=0.0, soft_max=2.0, max=20.0, update=_redraw)
     bpy.types.Scene.pobim_splat_sort_interval = FloatProperty(
         name='Sort Interval (s)',
         description='ช่วงเวลาขั้นต่ำระหว่างการเรียงลำดับความลึก (ทำงานเบื้องหลัง ไม่บล็อก viewport '
@@ -113,4 +119,5 @@ def unregister():
     del bpy.types.Scene.pobim_splats_aa
     del bpy.types.Scene.pobim_splat_measure_kind
     del bpy.types.Scene.pobim_splat_measure_mode
+    del bpy.types.Scene.pobim_splats_near_cull
     del bpy.types.Scene.pobim_splat_sort_interval
