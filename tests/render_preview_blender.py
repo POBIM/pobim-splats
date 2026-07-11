@@ -27,7 +27,7 @@ def render():
     tmp = tempfile.mkdtemp()
     ply_path = os.path.join(tmp, 'torus.ply')
     write_gaussian_ply(ply_path, *make_torus_splats(300_000))
-    cloud = load_gaussian_ply(ply_path, srgb_to_linear=False)
+    cloud = load_gaussian_ply(ply_path)
 
     sg = splat_gpu.SplatGPU(cloud)
     shader = splat_gpu.get_shader()
@@ -63,7 +63,9 @@ def render():
         sg.sort_if_needed(view, 0.0)
 
         params = np.array([SIZE, SIZE, 1.0, 1.0, 0, 0, 0, 0], np.float32)
-        ubo_data = np.concatenate([view.T.ravel(), proj.T.ravel(), params])
+        cam = np.linalg.inv(view)[:3, 3]
+        cam4 = np.array([cam[0], cam[1], cam[2], 0.0], np.float32)
+        ubo_data = np.concatenate([view.T.ravel(), proj.T.ravel(), params, cam4])
         ubo = gpu.types.GPUUniformBuf(splat_gpu._np_buffer('FLOAT', ubo_data))
 
         gpu.state.blend_set('ALPHA')
@@ -73,6 +75,7 @@ def render():
         shader.uniform_block('u', ubo)
         shader.uniform_sampler('dataTex', sg.data_tex)
         shader.uniform_sampler('orderTex', sg.order_tex)
+        shader.uniform_sampler('shTex', sg.sh_tex if sg.sh_tex else sg.data_tex)
         sg.batch.draw(shader)
         gpu.state.depth_mask_set(True)
         gpu.state.depth_test_set('NONE')

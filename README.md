@@ -15,16 +15,20 @@ light and pretty at millions of splats.
 
 ## Features
 
-- **Real splat rendering** — projected 3D covariance, soft gaussian falloff,
-  correct alpha blending; splats occlude and are occluded by scene meshes
+- **Real splat rendering** — projected 3D covariance with the same kernel
+  behavior as the PlayCanvas engine (dilation + minimum kernel size), so
+  surfaces read continuous at Splat Size 1; optional energy-conserving AA
+- **View-dependent color (SH bands 1–3)** — loaded from `.ply` `f_rest`,
+  compressed-PLY `sh`, and SOG `shN`; per-splat byte-packed on the GPU with
+  a per-object View SH Bands control
 - **Import without conversion** — standard `.ply`, SuperSplat
   `.compressed.ply`, and SOG v2 (`.sog` bundle or `meta.json`)
 - **Fast** — depth sorting runs on a background thread (the viewport never
   stalls) and only re-sorts when the view direction rotates more than ~1°;
   panning and zooming cost zero sorts
-- **Measure & Scale** — click two points on the splat, type the real-world
-  distance, and the scan snaps to real-world size (scaled about the first
-  point, undoable)
+- **Measure & Scale** — chained measurements with two pick modes: Surface
+  (depth pick on the rendered splats) or Splat Centers; type the real-world
+  distance and the scan snaps to real-world size (undoable)
 - **Behaves like a Blender object** — each splat cloud is parented to an
   Empty: move, rotate, scale, hide, duplicate as usual; reloads automatically
   when you reopen the `.blend`
@@ -60,13 +64,17 @@ Per-splat controls in the panel: **Splat Size**, **Opacity**, **Reload**,
 
 Scans rarely come in real-world units. To fix that:
 
-1. Click **Measure & Scale** in the splat's panel box
-2. Left-click the first point, then the second — the cursor snaps to the
-   nearest splat with a ring indicator and a live distance readout
-   (right-click / Esc cancels)
-3. Enter the **real distance** in the dialog and confirm
+1. Click **Measure & Scale** in the splat's panel box (the dropdown next to
+   it selects the pick mode; **M** toggles it while measuring)
+   - **Surface** — picks points on the rendered splat surface via a depth
+     pass (like POBIMStudio's measure tool)
+   - **Splat Centers** — snaps to the nearest gaussian center
+2. Left-click to add points — segments chain like POBIMStudio's tool, with
+   distance chips per segment and a running total in the status bar
+3. Press **Enter** (or **S**) to open the scale dialog for the last segment,
+   enter the **real distance**, confirm. Right-click / Esc exits.
 
-The cloud scales uniformly about the first picked point. Ctrl+Z undoes it.
+The cloud scales uniformly about the segment's first point. Ctrl+Z undoes it.
 
 ### Color tip
 
@@ -77,12 +85,11 @@ match web splat viewers, set
 
 ## Current limitations
 
-- SH band 0 only (no view-dependent color yet; SOG `shN` data is skipped)
 - Viewport only — F12 renders (EEVEE/Cycles) don't include splats yet;
   use Viewport Render Image/Animation, or see the
   [roadmap](docs/ROADMAP.md)
 - Orthographic cameras use an approximate (constant) Jacobian
-- Picking snaps to gaussian centers (subsampled to 400k for speed)
+- Center-mode picking subsamples to 400k gaussians for speed
 
 ## Development
 

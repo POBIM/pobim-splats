@@ -13,6 +13,7 @@ _spec.loader.exec_module(_mod)
 project_to_pixels = _mod.project_to_pixels
 pick_nearest = _mod.pick_nearest
 scale_about_point_matrix = _mod.scale_about_point_matrix
+unproject_pixel = _mod.unproject_pixel
 
 
 def perspective(f=2.0):
@@ -56,6 +57,14 @@ def main():
     # nothing in range -> -1
     idx = pick_nearest(persp, points, w, h, (0, 0), radius_px=10)
     assert idx == -1
+
+    # unproject roundtrip: project a point, unproject with its window depth
+    pt = np.array([[0.7, -0.4, -6.0]], np.float32)
+    px, ndc_z, valid = project_to_pixels(persp, pt, w, h)
+    assert valid[0]
+    depth01 = (float(ndc_z[0]) + 1.0) * 0.5
+    back = unproject_pixel(persp, float(px[0, 0]), float(px[0, 1]), depth01, w, h)
+    assert np.allclose(back, pt[0], atol=1e-3), back
 
     # scale about pivot: pivot fixed, distances scale by factor
     pivot = np.array([1.0, 2.0, 3.0])

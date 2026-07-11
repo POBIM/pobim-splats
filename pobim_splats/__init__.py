@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'POBIM Splats — 3D Gaussian Splatting Viewer',
     'author': 'POBIM',
-    'version': (0, 2, 0),
+    'version': (0, 3, 0),
     'blender': (4, 2, 0),
     'location': 'View3D > Sidebar (N) > 3DGS',
     'description': 'Import and display 3D Gaussian Splatting .ply files with a real GPU splat renderer',
@@ -10,7 +10,8 @@ bl_info = {
 
 import bpy
 from bpy.app.handlers import persistent
-from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
+from bpy.props import (
+    BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty)
 
 from . import measure, operators, splat_gpu, ui
 
@@ -36,13 +37,33 @@ def register():
     bpy.types.Object.pobim_splat_file = StringProperty(subtype='FILE_PATH', default='')
     bpy.types.Object.pobim_splat_count = IntProperty(default=0)
     bpy.types.Object.pobim_splat_max = IntProperty(default=0, min=0)
-    bpy.types.Object.pobim_splat_srgb = BoolProperty(default=True)
+    bpy.types.Object.pobim_splat_srgb = BoolProperty(default=True, update=_redraw)
+    bpy.types.Object.pobim_splat_shmax = IntProperty(
+        name='Max SH Bands', default=3, min=0, max=3)
+    bpy.types.Object.pobim_splat_sh_loaded = IntProperty(default=0)
+    bpy.types.Object.pobim_splat_sh_view = IntProperty(
+        name='View SH Bands',
+        description='จำนวน SH bands ที่ใช้แสดงผล (view-dependent color)',
+        default=3, min=0, max=3, update=_redraw)
     bpy.types.Object.pobim_splat_scale = FloatProperty(
         name='Splat Size', default=1.0, min=0.05, max=10.0, update=_redraw)
     bpy.types.Object.pobim_splat_opacity = FloatProperty(
         name='Opacity', default=1.0, min=0.0, max=2.0, update=_redraw)
     bpy.types.Scene.pobim_splats_enabled = BoolProperty(
         name='Show Splats', default=True, update=_redraw)
+    bpy.types.Scene.pobim_splat_measure_mode = EnumProperty(
+        name='Pick Mode',
+        description='วิธีจับจุดของเครื่องมือวัด (กด M สลับได้ระหว่างวัด)',
+        items=(
+            ('SURFACE', 'Surface', 'จับจุดบนพื้นผิว splat ที่เรนเดอร์จริง (แบบ POBIMStudio)'),
+            ('CENTERS', 'Splat Centers', 'Snap เข้าหาศูนย์กลาง splat ที่ใกล้ที่สุด'),
+        ),
+        default='SURFACE')
+    bpy.types.Scene.pobim_splats_aa = BoolProperty(
+        name='Antialiasing (energy conserving)',
+        description='ชดเชยความสว่างของ splat เล็กแบบ Mip-Splatting — ภาพไกลคมขึ้น '
+                    'แต่พื้นผิวจะโปร่งกว่าโหมดปกติ (ปิด = look แบบ PlayCanvas/SuperSplat)',
+        default=False, update=_redraw)
     bpy.types.Scene.pobim_splat_sort_interval = FloatProperty(
         name='Sort Interval (s)',
         description='ช่วงเวลาขั้นต่ำระหว่างการเรียงลำดับความลึก (ทำงานเบื้องหลัง ไม่บล็อก viewport '
@@ -74,7 +95,12 @@ def unregister():
     del bpy.types.Object.pobim_splat_count
     del bpy.types.Object.pobim_splat_max
     del bpy.types.Object.pobim_splat_srgb
+    del bpy.types.Object.pobim_splat_shmax
+    del bpy.types.Object.pobim_splat_sh_loaded
+    del bpy.types.Object.pobim_splat_sh_view
     del bpy.types.Object.pobim_splat_scale
     del bpy.types.Object.pobim_splat_opacity
     del bpy.types.Scene.pobim_splats_enabled
+    del bpy.types.Scene.pobim_splats_aa
+    del bpy.types.Scene.pobim_splat_measure_mode
     del bpy.types.Scene.pobim_splat_sort_interval

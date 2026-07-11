@@ -19,6 +19,7 @@ class POBIM_PT_splats(bpy.types.Panel):
         row = layout.row(align=True)
         row.prop(scene, 'pobim_splats_enabled', text='Show Splats', toggle=True)
         layout.prop(scene, 'pobim_splat_sort_interval')
+        layout.prop(scene, 'pobim_splats_aa', text='Energy-Conserving AA')
 
         splats = [obj for obj in scene.objects if obj.pobim_splat_uid]
         if not splats:
@@ -43,11 +44,17 @@ class POBIM_PT_splats(bpy.types.Panel):
                 box.label(text=entry.error, icon='ERROR')
                 continue
 
-            box.label(text=f'{obj.pobim_splat_count:,} splats')
+            sh = obj.pobim_splat_sh_loaded
+            box.label(text=f'{obj.pobim_splat_count:,} splats'
+                           + (f' · SH band {sh}' if sh else ''))
             box.prop(obj, 'pobim_splat_scale')
             box.prop(obj, 'pobim_splat_opacity')
-            op = box.operator('pobim_splats.measure_scale', icon='DRIVER_DISTANCE')
+            if sh:
+                box.prop(obj, 'pobim_splat_sh_view')
+            row = box.row(align=True)
+            op = row.operator('pobim_splats.measure_scale', icon='DRIVER_DISTANCE')
             op.uid = obj.pobim_splat_uid
+            row.prop(scene, 'pobim_splat_measure_mode', text='')
 
 
 CLASSES = (POBIM_PT_splats,)

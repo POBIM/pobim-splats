@@ -39,6 +39,17 @@ def pick_nearest(persp, points, width, height, mouse_xy, radius_px=25.0):
     return int(np.argmin(z))
 
 
+def unproject_pixel(persp, mx, my, depth01, width, height):
+    """Pixel + window depth (gl_FragCoord.z, 0..1) -> world position."""
+    ndc = np.array([
+        2.0 * mx / width - 1.0,
+        2.0 * my / height - 1.0,
+        2.0 * depth01 - 1.0,
+        1.0], np.float64)
+    h = np.linalg.inv(np.asarray(persp, np.float64)) @ ndc
+    return (h[:3] / h[3]).astype(np.float32)
+
+
 def scale_about_point_matrix(pivot, factor):
     """4x4 world matrix that scales uniformly by factor, keeping pivot fixed."""
     m = np.eye(4, dtype=np.float64)

@@ -38,11 +38,15 @@ def make_torus_splats(n, major=2.0, minor=0.6, seed=7):
     return pos, scales, quat, sh0, opacity
 
 
-def write_gaussian_ply(path, pos, scales, quat, sh0, opacity):
+def write_gaussian_ply(path, pos, scales, quat, sh0, opacity, sh_rest=None):
+    """Write a standard 3DGS PLY. sh_rest: optional (N, 3C) channel-major
+    f_rest coefficients (C = 3/8/15 for bands 1..3)."""
     n = pos.shape[0]
+    rest_n = 0 if sh_rest is None else sh_rest.shape[1]
     fields = (
         ['x', 'y', 'z', 'nx', 'ny', 'nz'] +
         [f'f_dc_{i}' for i in range(3)] +
+        [f'f_rest_{i}' for i in range(rest_n)] +
         ['opacity'] +
         [f'scale_{i}' for i in range(3)] +
         [f'rot_{i}' for i in range(4)]
@@ -55,9 +59,11 @@ def write_gaussian_ply(path, pos, scales, quat, sh0, opacity):
     data = np.zeros((n, len(fields)), np.float32)
     data[:, 0:3] = pos
     data[:, 6:9] = sh0
-    data[:, 9] = opacity
-    data[:, 10:13] = scales
-    data[:, 13:17] = quat
+    if rest_n:
+        data[:, 9:9 + rest_n] = sh_rest
+    data[:, 9 + rest_n] = opacity
+    data[:, 10 + rest_n:13 + rest_n] = scales
+    data[:, 13 + rest_n:17 + rest_n] = quat
 
     with open(path, 'wb') as f:
         f.write(header.encode('ascii'))

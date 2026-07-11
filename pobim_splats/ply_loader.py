@@ -30,17 +30,47 @@ _REQUIRED = (
 
 
 class SplatCloud:
-    """Parsed splat data, ready for GPU upload."""
+    """Parsed splat data, ready for GPU upload.
 
-    def __init__(self, positions, cov6, colors, opacities):
+    Colors stay in SH color space (no sRGB conversion) — the shader adds the
+    view-dependent SH contribution first and converts to linear afterwards.
+    """
+
+    def __init__(self, positions, cov6, colors, opacities, sh=None, sh_bands=0):
         self.positions = positions    # (N, 3) float32, object space
         self.cov6 = cov6              # (N, 6) float32: xx, xy, xz, yy, yz, zz
         self.colors = colors          # (N, 3) float32, 0..1
         self.opacities = opacities    # (N,)   float32, 0..1
+        self.sh = sh                  # (N, 3C) uint8 channel-major, or None
+        self.sh_bands = sh_bands      # 0..3
 
     @property
     def count(self):
         return self.positions.shape[0]
+
+
+# coefficients per channel for SH bands 1..3
+SH_COEFFS = {0: 0, 1: 3, 2: 8, 3: 15}
+SH_BANDS_FROM_COEFFS = {0: 0, 3: 1, 8: 2, 15: 3}
+
+
+def quantize_sh(coeffs):
+    """float SH coefficients -> uint8 with the ±4 range used by compressed PLY."""
+    out = np.empty(coeffs.shape, np.uint8)
+    step = 1_000_000
+    for i in range(0, coeffs.shape[0], step):
+        j = min(i + step, coeffs.shape[0])
+        out[i:j] = np.clip(
+            np.round((coeffs[i:j] / 8.0 + 0.5) * 255.0), 0, 255).astype(np.uint8)
+    return out
+
+
+def truncate_sh(coeffs, src_c, dst_c):
+    """Reduce channel-major (N, 3*src_c) coefficients to dst_c per channel."""
+    if dst_c >= src_c:
+        return coeffs
+    idx = [ch * src_c + k for ch in range(3) for k in range(dst_c)]
+    return np.ascontiguousarray(coeffs[:, idx])
 
 
 def _parse_header(filepath):
@@ -125,22 +155,22 @@ def _quat_scale_to_cov6(quat, scales, out):
     out[:, 5] = sigma[:, 2, 2]
 
 
-def _srgb_to_linear(c):
-    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4).astype(np.float32)
-
-
 def build_cloud(positions, scales, quat, colors, opacities,
-                max_splats=0, srgb_to_linear=True):
+                max_splats=0, sh=None):
     """Assemble a SplatCloud from raw arrays (shared by all format decoders).
 
     positions (N,3); scales (N,3) LINEAR (already exp'd); quat (N,4) w,x,y,z;
-    colors (N,3) 0..1; opacities (N,) 0..1.
+    colors (N,3) 0..1 in SH color space; opacities (N,) 0..1;
+    sh: channel-major SH coefficients (N, 3C) as float32 or pre-quantized
+    uint8, or None.
     """
     n = positions.shape[0]
     if max_splats and n > max_splats:
         sel = np.random.default_rng(12345).permutation(n)[:max_splats]
         positions, scales, quat = positions[sel], scales[sel], quat[sel]
         colors, opacities = colors[sel], opacities[sel]
+        if sh is not None:
+            sh = sh[sel]
         n = max_splats
 
     quat = quat / (np.linalg.norm(quat, axis=1, keepdims=True) + 1e-12)
@@ -153,12 +183,20 @@ def build_cloud(positions, scales, quat, colors, opacities,
         _quat_scale_to_cov6(quat[i:j], scales[i:j], cov6[i:j])
 
     colors = np.clip(colors, 0.0, 1.0).astype(np.float32)
-    if srgb_to_linear:
-        colors = _srgb_to_linear(colors)
+
+    sh_bands = 0
+    if sh is not None:
+        c = sh.shape[1] // 3
+        sh_bands = SH_BANDS_FROM_COEFFS.get(c, 0)
+        if sh_bands == 0:
+            sh = None
+        elif sh.dtype != np.uint8:
+            sh = quantize_sh(np.asarray(sh, np.float32))
 
     return SplatCloud(
         np.ascontiguousarray(positions, dtype=np.float32), cov6,
-        colors, np.ascontiguousarray(opacities, dtype=np.float32))
+        colors, np.ascontiguousarray(opacities, dtype=np.float32),
+        sh=sh, sh_bands=sh_bands)
 
 
 def _unpack_111011(packed):
@@ -172,7 +210,7 @@ def _unpack_111011(packed):
 CHUNK = 256  # splats per chunk in the compressed PLY format
 
 
-def _decode_compressed(parts, max_splats, srgb_to_linear):
+def _decode_compressed(parts, max_splats, max_sh_bands):
     """Decode SuperSplat .compressed.ply (chunk min/max + packed uint32 vertex).
 
     Mirrors splat-transform's decompress-ply.ts, vectorized with numpy.
@@ -230,23 +268,39 @@ def _decode_compressed(parts, max_splats, srgb_to_linear):
             colors[:, k] = lerp_chunk(lo, hi, colors[:, k])
     opacities = (pc & 0xFF).astype(np.float32) / 255.0
 
+    # optional 'sh' element: uint8 f_rest_i columns, channel-major
+    sh = None
+    sh_elem = parts.get('sh')
+    if sh_elem is not None and max_sh_bands > 0:
+        names = [f for f in (sh_elem.dtype.names or ()) if f.startswith('f_rest_')]
+        c = len(names) // 3
+        if c in SH_BANDS_FROM_COEFFS and c > 0:
+            raw = np.stack(
+                [sh_elem[f'f_rest_{i}'] for i in range(3 * c)], axis=1)
+            # decode: 0 -> 0, 255 -> 1, else (v+0.5)/256; coef = (n-0.5)*8
+            norm = np.where(raw == 0, 0.0,
+                            np.where(raw == 255, 1.0,
+                                     (raw.astype(np.float32) + 0.5) / 256.0))
+            coeffs = ((norm - 0.5) * 8.0).astype(np.float32)
+            dst_c = min(c, SH_COEFFS[max_sh_bands])
+            sh = truncate_sh(coeffs, c, dst_c)
+
     return build_cloud(positions, scales, quat, colors, opacities,
-                       max_splats, srgb_to_linear)
+                       max_splats, sh=sh)
 
 
-def load_gaussian_ply(filepath, max_splats=0, srgb_to_linear=True):
+def load_gaussian_ply(filepath, max_splats=0, max_sh_bands=3):
     """Load a 3DGS PLY file (standard or SuperSplat-compressed) into a SplatCloud.
 
     max_splats: 0 = load all; otherwise randomly subsample down to this count.
-    srgb_to_linear: convert SH0 colors to linear so Blender's Standard view
-        transform reproduces what web splat viewers show.
+    max_sh_bands: highest spherical-harmonics band to keep (0 = SH0 only).
     """
     elements, offset = _parse_header(filepath)
     names = [name for name, _, _ in elements]
 
     if 'chunk' in names and 'vertex' in names:
         parts = _read_elements(filepath, elements, offset)
-        return _decode_compressed(parts, max_splats, srgb_to_linear)
+        return _decode_compressed(parts, max_splats, max_sh_bands)
 
     if not elements or elements[0][0] != 'vertex' or elements[0][1] <= 0:
         raise ValueError('PLY ไม่มี vertex element นำหน้า — ไม่ใช่ไฟล์ 3DGS ที่รองรับ')
@@ -269,5 +323,16 @@ def load_gaussian_ply(filepath, max_splats=0, srgb_to_linear=True):
     colors = 0.5 + SH_C0 * np.stack(
         [data['f_dc_0'], data['f_dc_1'], data['f_dc_2']], axis=1).astype(np.float32)
 
+    # higher SH bands: f_rest_0..f_rest_{3C-1}, channel-major
+    sh = None
+    if max_sh_bands > 0:
+        rest = [f for f in (dtype.names or ()) if f.startswith('f_rest_')]
+        c = len(rest) // 3
+        if c in SH_BANDS_FROM_COEFFS and c > 0:
+            coeffs = np.stack(
+                [data[f'f_rest_{i}'] for i in range(3 * c)], axis=1).astype(np.float32)
+            dst_c = min(c, SH_COEFFS[max_sh_bands])
+            sh = truncate_sh(coeffs, c, dst_c)
+
     return build_cloud(positions, scales, quat, colors, opacities,
-                       max_splats, srgb_to_linear)
+                       max_splats, sh=sh)

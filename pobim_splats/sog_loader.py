@@ -33,24 +33,27 @@ def _load_webp_rgba(filepath):
     return rgba[::-1]  # Blender rows are bottom-up; SOG raster is top-down
 
 
-def _load_from_dir(meta_path, max_splats, srgb_to_linear):
+def _load_from_dir(meta_path, max_splats, max_sh_bands):
     with open(meta_path, 'r', encoding='utf-8') as f:
         meta = json.load(f)
 
     base = os.path.dirname(meta_path)
+    sections = ['means', 'scales', 'quats', 'sh0']
+    if max_sh_bands > 0:
+        sections.append('shN')
     textures = {}
-    for section in ('means', 'scales', 'quats', 'sh0'):
+    for section in sections:
         for name in meta.get(section, {}).get('files', []):
             if name not in textures:
                 textures[name] = _load_webp_rgba(os.path.join(base, name))
 
-    return decode_sog(meta, textures, max_splats, srgb_to_linear)
+    return decode_sog(meta, textures, max_splats, max_sh_bands)
 
 
-def load_sog(filepath, max_splats=0, srgb_to_linear=True):
+def load_sog(filepath, max_splats=0, max_sh_bands=3):
     """Load a SOG scene from a bundled .sog (zip) or an unbundled meta.json."""
     if filepath.lower().endswith('.json'):
-        return _load_from_dir(filepath, max_splats, srgb_to_linear)
+        return _load_from_dir(filepath, max_splats, max_sh_bands)
 
     if not zipfile.is_zipfile(filepath):
         raise ValueError('ไฟล์ .sog ไม่ใช่ zip bundle ที่ถูกต้อง')
@@ -62,6 +65,6 @@ def load_sog(filepath, max_splats=0, srgb_to_linear=True):
         meta_path = os.path.join(tmp, 'meta.json')
         if not os.path.exists(meta_path):
             raise ValueError('.sog bundle ไม่มี meta.json')
-        return _load_from_dir(meta_path, max_splats, srgb_to_linear)
+        return _load_from_dir(meta_path, max_splats, max_sh_bands)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

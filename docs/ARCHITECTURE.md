@@ -92,11 +92,30 @@ orthographic) → `cov2D = J·A·Σ·Aᵀ·Jᵀ` (A = mat3(modelView) รวม 
 `apply_scale` คูณ `matrix_world` ด้วยเมทริกซ์สเกลรอบจุดแรก (จุดแรกอยู่กับที่,
 undo ได้) overlay วาดด้วย builtin `UNIFORM_COLOR` shader + `blf`
 
+## รอบ 3 (feedback จากการใช้งานจริง)
+
+**Kernel ตรงตาม PlayCanvas** (`gsplatCorner.js`): +0.3px dilation, **`lambda2 =
+max(mid−radius, 0.1)`** (ตัวที่ทำให้ผิวต่อเนื่องที่ Splat Size 1 — splat
+บาง/เล็กไม่มีวันหายเป็นรู), size multiplier คูณเข้า covariance ก่อน dilation,
+AA (Mip-Splatting det-ratio) เป็น toggle ปิดโดย default เหมือน engine
+viewport ใช้ device pixels จาก `gpu.state.viewport_get()`
+
+**SH bands 1–3**: เก็บ uint8 channel-major (quantize `(c/8+0.5)*255`),
+pack 4 bytes/float 16 bytes/texel ใน RGBA32F (`tps = ceil(3C/16)`),
+shader `evalSH` ค่าคงที่ INRIA, ทิศกล้องใน object space ผ่าน `u.camPos`
+**การแปลง sRGB→linear ย้ายมาทำใน shader หลังบวก SH** (loader ไม่แปลงแล้ว)
+UBO = 44 floats: modelView, projection, params, params2{aa,shBands,shWidth,srgb},
+camPos — writer ทุกตัว (draw, depth pick, tests) ต้องตรงกัน
+
+**Measure v2**: วัดต่อเนื่องหลายช่วง (chain), 2 โหมด — SURFACE ใช้ depth pass
+(`get_pick_shader` เขียน `gl_FragCoord.z` ลง offscreen + `unproject_pixel`)
+/ CENTERS snap ศูนย์กลาง, กด M สลับ, Enter/S เปิด dialog ปรับสเกลช่วงล่าสุด
+Overlay สีตาม POBIMStudio (`tool.scss`): เส้นดำรอง + ขาว/ส้ม #ffa500,
+จุด fill + ขอบ, ป้ายระยะพื้นส้ม
+
 ## Roadmap
 
-1. **SH bands 1–3** — view-dependent color: เพิ่ม texel ต่อ splat + ประเมิน SH
-   ใน vertex shader ตามทิศกล้อง (SOG มีข้อมูล shN อยู่แล้ว)
-2. **F12 render** — ทางเลือก:
+1. **F12 render** — ทางเลือก:
    - `bpy.types.RenderEngine` custom engine ที่ rasterize splat เข้า Render Result
    - หรือ hook `render_post` composite ภาพจาก offscreen render (มีโค้ดอยู่แล้วใน
      `tests/render_preview_blender.py` เป็นต้นแบบ)

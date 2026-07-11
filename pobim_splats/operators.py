@@ -29,6 +29,10 @@ class POBIM_OT_import_splat(bpy.types.Operator, ImportHelper):
         name='Max Splats',
         description='จำกัดจำนวน splat (สุ่มลดตอนโหลด), 0 = โหลดทั้งหมด',
         default=0, min=0, soft_max=10_000_000)
+    max_sh_bands: IntProperty(
+        name='Max SH Bands',
+        description='SH bands สูงสุดที่โหลด (view-dependent color) — ลดเพื่อประหยัดแรม',
+        default=3, min=0, max=3)
     srgb_to_linear: BoolProperty(
         name='Convert Color to Linear',
         description='แปลงสีเป็น linear เพื่อให้ view transform แบบ Standard แสดงสีตรงกับ web viewer',
@@ -48,6 +52,7 @@ class POBIM_OT_import_splat(bpy.types.Operator, ImportHelper):
         obj.pobim_splat_file = self.filepath
         obj.pobim_splat_max = self.max_splats
         obj.pobim_splat_srgb = self.srgb_to_linear
+        obj.pobim_splat_shmax = self.max_sh_bands
         if self.orient_z_up:
             obj.rotation_euler = (-math.pi / 2.0, 0.0, 0.0)
         context.collection.objects.link(obj)

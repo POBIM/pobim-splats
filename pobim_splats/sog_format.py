@@ -11,7 +11,7 @@
 
 import numpy as np
 
-from .ply_loader import SH_C0, build_cloud
+from .ply_loader import SH_C0, SH_COEFFS, build_cloud
 
 # for largest component m (0..3 = w,x,y,z), the three packed values fill
 # the remaining quaternion slots in ascending index order
@@ -34,11 +34,12 @@ def _texel_data(rgba, count, name):
     return flat[:count]
 
 
-def decode_sog(meta, textures, max_splats=0, srgb_to_linear=True):
+def decode_sog(meta, textures, max_splats=0, max_sh_bands=3):
     """Decode SOG v2 into a SplatCloud.
 
     meta: parsed meta.json dict.
     textures: dict filename -> (H, W, 4) uint8 array in TOP-DOWN raster order.
+    max_sh_bands: highest SH band to decode from the optional shN section.
     """
     version = meta.get('version')
     if version != 2:
@@ -104,5 +105,35 @@ def decode_sog(meta, textures, max_splats=0, srgb_to_linear=True):
     colors = 0.5 + SH_C0 * c_code[c[:, :3]]
     opacities = c[:, 3].astype(np.float32) / 255.0
 
+    # shN (optional): 16-bit palette label -> centroids texture -> codebook
+    sh = None
+    shn = meta.get('shN')
+    if shn and max_sh_bands > 0:
+        bands = int(shn.get('bands', 0))
+        coeffs_n = SH_COEFFS.get(min(bands, max_sh_bands), 0)
+        src_c = SH_COEFFS.get(bands, 0)
+        if coeffs_n > 0 and src_c > 0:
+            sh_code = np.asarray(shn['codebook'], np.float32)
+            labels = tex('shN', 1)
+            label = labels[:, 0].astype(np.int64) | (labels[:, 1].astype(np.int64) << 8)
+            cent_name = shn['files'][0]
+            if cent_name not in textures:
+                raise ValueError(f'SOG: ไม่พบ texture {cent_name}')
+            cent = textures[cent_name]          # (H, 64*src_c, 4)
+            ch, cw = cent.shape[0], cent.shape[1]
+            palette_count = int(shn.get('count', ch * 64))
+            valid = label < min(palette_count, ch * 64)
+            label_safe = np.where(valid, label, 0)
+            cy = label_safe // 64
+            cx = (label_safe % 64) * src_c      # column base, one col per coeff
+            # gather (N, coeffs_n, 3) centroid bytes -> codebook floats
+            cols = cx[:, None] + np.arange(coeffs_n)[None, :]
+            bytes_rgb = cent[cy[:, None], cols, :3]
+            coeffs = sh_code[bytes_rgb].astype(np.float32)
+            coeffs[~valid] = 0.0
+            # channel-major (N, 3*coeffs_n)
+            sh = np.concatenate(
+                [coeffs[:, :, 0], coeffs[:, :, 1], coeffs[:, :, 2]], axis=1)
+
     return build_cloud(positions, scales, quat, colors, opacities,
-                       max_splats, srgb_to_linear)
+                       max_splats, sh=sh)

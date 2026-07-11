@@ -28,9 +28,10 @@ def main():
         pos, scales, quat, sh0, opacity = make_torus_splats(50_000)
         write_gaussian_ply(path, pos, scales, quat, sh0, opacity)
 
-        cloud = load_gaussian_ply(path, srgb_to_linear=False)
+        cloud = load_gaussian_ply(path)
         assert cloud.count == 50_000, cloud.count
         assert np.allclose(cloud.positions, pos, atol=1e-6)
+        assert cloud.sh is None and cloud.sh_bands == 0
 
         # opacity = sigmoid(3.0)
         assert np.allclose(cloud.opacities, 1 / (1 + np.exp(-3.0)), atol=1e-5)
@@ -56,9 +57,22 @@ def main():
         small = load_gaussian_ply(path, max_splats=10_000)
         assert small.count == 10_000
 
-        # srgb conversion darkens midtones
-        lin = load_gaussian_ply(path, srgb_to_linear=True)
-        assert (lin.colors <= cloud.colors + 1e-6).all()
+        # SH band-1 roundtrip: f_rest columns -> quantized (N, 9) uint8
+        sh_path = os.path.join(tmp, 'sh.ply')
+        rng = np.random.default_rng(3)
+        sh_rest = rng.uniform(-2.0, 2.0, (50_000, 9)).astype(np.float32)
+        write_gaussian_ply(sh_path, pos, scales, quat, sh0, opacity, sh_rest)
+        sh_cloud = load_gaussian_ply(sh_path)
+        assert sh_cloud.sh_bands == 1, sh_cloud.sh_bands
+        assert sh_cloud.sh.shape == (50_000, 9)
+        decoded = (sh_cloud.sh.astype(np.float32) / 255.0 - 0.5) * 8.0
+        assert np.abs(decoded - sh_rest).max() < 0.02, 'SH quantization error'
+        # band cap drops the data entirely at 0
+        no_sh = load_gaussian_ply(sh_path, max_sh_bands=0)
+        assert no_sh.sh is None and no_sh.sh_bands == 0
+        # subsample keeps sh aligned
+        sub = load_gaussian_ply(sh_path, max_splats=5_000)
+        assert sub.sh.shape == (5_000, 9)
 
         # rejects non-3DGS ply
         bad = os.path.join(tmp, 'bad.ply')
@@ -81,8 +95,8 @@ def main():
         write_gaussian_ply(path, pos, scales, quat, sh0, opacity)
         write_compressed_gaussian_ply(cpath, pos, scales, quat, sh0, opacity)
 
-        ref = load_gaussian_ply(path, srgb_to_linear=False)
-        dec = load_gaussian_ply(cpath, srgb_to_linear=False)
+        ref = load_gaussian_ply(path)
+        dec = load_gaussian_ply(cpath)
         assert dec.count == ref.count
 
         # positions: within per-chunk quantization step (chunks of 256 random

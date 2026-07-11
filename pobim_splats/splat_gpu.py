@@ -44,6 +44,59 @@ void emitDegenerate()
     vQuad = vec2(0.0);
 }
 
+// SH texture words for the current splat (filled before evalSH)
+uvec4 g_shw0;
+uvec4 g_shw1;
+uvec4 g_shw2;
+
+// byte-packed SH coefficient i (4 per float, 16 per texel), range +-4
+float shCoef(int i)
+{
+    int t = i >> 4;
+    uvec4 w = t == 0 ? g_shw0 : (t == 1 ? g_shw1 : g_shw2);
+    uint b = (w[(i >> 2) & 3] >> uint(8 * (i & 3))) & 255u;
+    return (float(b) / 255.0 - 0.5) * 8.0;
+}
+
+// view-dependent color offset from SH bands 1..3 (INRIA basis and layout)
+vec3 evalSH(int bands, int coeffsN, vec3 dir)
+{
+    float x = dir.x, y = dir.y, z = dir.z;
+    float xx = x * x, yy = y * y, zz = z * z;
+    float xy = x * y, yz = y * z, xz = x * z;
+
+    float basis[15];
+    basis[0] = -0.48860251 * y;
+    basis[1] = 0.48860251 * z;
+    basis[2] = -0.48860251 * x;
+    if (bands >= 2) {
+        basis[3] = 1.09254843 * xy;
+        basis[4] = -1.09254843 * yz;
+        basis[5] = 0.31539157 * (2.0 * zz - xx - yy);
+        basis[6] = -1.09254843 * xz;
+        basis[7] = 0.54627421 * (xx - yy);
+    }
+    if (bands >= 3) {
+        basis[8] = -0.59004359 * y * (3.0 * xx - yy);
+        basis[9] = 2.89061144 * xy * z;
+        basis[10] = -0.45704580 * y * (4.0 * zz - xx - yy);
+        basis[11] = 0.37317633 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy);
+        basis[12] = -0.45704580 * x * (4.0 * zz - xx - yy);
+        basis[13] = 1.44530572 * z * (xx - yy);
+        basis[14] = -0.59004359 * x * (xx - yy);
+    }
+
+    vec3 result = vec3(0.0);
+    for (int ch = 0; ch < 3; ch++) {
+        float acc = 0.0;
+        for (int k = 0; k < coeffsN; k++) {
+            acc += basis[k] * shCoef(ch * coeffsN + k);
+        }
+        result[ch] = acc;
+    }
+    return result;
+}
+
 void main()
 {
     int quad = int(quadId + 0.5);
@@ -96,34 +149,71 @@ void main()
     mat3 T = W * J;
     mat3 cov2dm = transpose(T) * Vrk * T;
 
-    // +0.3px dilation as in the reference 3DGS rasterizer (antialias floor)
-    float cxx = cov2dm[0][0] + 0.3;
-    float cxy = cov2dm[0][1];
-    float cyy = cov2dm[1][1] + 0.3;
+    // Kernel handling matched to the PlayCanvas engine (gsplatCorner.js):
+    // +0.3px dilation on the diagonal and a minimum minor eigenvalue of 0.1
+    // so thin/sub-pixel splats never collapse below ~1px — this is what makes
+    // surfaces read as continuous at Splat Size 1. The optional AA factor
+    // (params2.x) is the engine's GSPLAT_AA energy compensation: sharper and
+    // physically correct in the distance, but more translucent.
+    float sizeMul = u.params.z;
+    float sizeSq = sizeMul * sizeMul;
+    float cxx = cov2dm[0][0] * sizeSq;
+    float cxy = cov2dm[0][1] * sizeSq;
+    float cyy = cov2dm[1][1] * sizeSq;
+
+    float aaFactor = 1.0;
+    if (u.params2.x > 0.5) {
+        float detOrig = max(cxx * cyy - cxy * cxy, 0.0);
+        float detBlur = (cxx + 0.3) * (cyy + 0.3) - cxy * cxy;
+        aaFactor = sqrt(max(detOrig / max(detBlur, 1e-12), 0.0));
+    }
+    cxx += 0.3;
+    cyy += 0.3;
 
     float mid = 0.5 * (cxx + cyy);
     float radius = length(vec2(0.5 * (cxx - cyy), cxy));
     float lambda1 = mid + radius;
-    float lambda2 = mid - radius;
-    if (lambda2 < 0.0) {
-        emitDegenerate();
-        return;
-    }
+    float lambda2 = max(mid - radius, 0.1);
 
     // guard the eigenvector against (0,0) when the ellipse is axis-aligned
     // with cxx >= cyy (or a perfect circle); x-axis is the correct fallback
     vec2 dv = vec2(cxy, lambda1 - cxx);
     vec2 diagv = dot(dv, dv) > 1e-12 ? normalize(dv) : vec2(1.0, 0.0);
-    float sizeMul = u.params.z;
-    vec2 majorAxis = min(sqrt(2.0 * lambda1), 1024.0) * diagv * sizeMul;
-    vec2 minorAxis = min(sqrt(2.0 * lambda2), 1024.0) * vec2(diagv.y, -diagv.x) * sizeMul;
+    vec2 majorAxis = min(sqrt(2.0 * lambda1), 1024.0) * diagv;
+    vec2 minorAxis = min(sqrt(2.0 * lambda2), 1024.0) * vec2(diagv.y, -diagv.x);
 
     uint pc = floatBitsToUint(d1.w);
     vec3 rgb = vec3(float((pc >> 16u) & 255u),
                     float((pc >> 8u) & 255u),
                     float(pc & 255u)) / 255.0;
 
-    vColor = vec4(rgb, d0.w * u.params.w);
+    // view-dependent color: SH bands evaluated in object space
+    int shBands = int(u.params2.y + 0.5);
+    if (shBands > 0) {
+        int coeffsN = shBands == 1 ? 3 : (shBands == 2 ? 8 : 15);
+        int tps = (3 * coeffsN + 15) / 16;
+        int shW = int(u.params2.z + 0.5);
+        int sbase = splat * tps;
+        g_shw0 = floatBitsToUint(
+            texelFetch(shTex, ivec2(sbase % shW, sbase / shW), 0));
+        g_shw1 = tps > 1 ? floatBitsToUint(
+            texelFetch(shTex, ivec2((sbase + 1) % shW, (sbase + 1) / shW), 0)) : uvec4(0u);
+        g_shw2 = tps > 2 ? floatBitsToUint(
+            texelFetch(shTex, ivec2((sbase + 2) % shW, (sbase + 2) / shW), 0)) : uvec4(0u);
+        vec3 dir = normalize(d0.xyz - u.camPos.xyz);
+        rgb += evalSH(shBands, coeffsN, dir);
+    }
+
+    // colors live in SH space up to here; convert to scene-linear at the end
+    // so Blender's Standard view transform reproduces web-viewer colors
+    if (u.params2.w > 0.5) {
+        rgb = clamp(rgb, vec3(0.0), vec3(1.0));
+        rgb = mix(rgb / 12.92,
+                  pow((rgb + vec3(0.055)) / 1.055, vec3(2.4)),
+                  step(vec3(0.04045), rgb));
+    }
+
+    vColor = vec4(rgb, d0.w * u.params.w * aaFactor);
     vec2 c = kCorners[corner];
     vQuad = c;
 
@@ -150,34 +240,65 @@ void main()
 }
 """
 
+# depth-pick variant: opaque threshold + fragment depth in the red channel,
+# used by the measure tool's Surface mode (front-most splat surface wins)
+PICK_FRAG_SRC = """
+void main()
+{
+    float a = -dot(vQuad, vQuad);
+    if (a < -4.0) {
+        discard;
+    }
+    float alpha = exp(a) * vColor.a;
+    if (alpha < 0.2) {
+        discard;
+    }
+    FragColor = vec4(gl_FragCoord.z, 0.0, 0.0, 1.0);
+}
+"""
+
 _shader = None
+_pick_shader = None
+
+
+def _build_shader(frag_src, iface_name):
+    info = gpu.types.GPUShaderCreateInfo()
+    info.typedef_source(
+        'struct SplatUniforms {'
+        '  mat4 modelView;'
+        '  mat4 projection;'
+        '  vec4 params;'    # viewport w, viewport h, size multiplier, opacity multiplier
+        '  vec4 params2;'   # aa flag, sh bands, sh tex width, srgb flag
+        '  vec4 camPos;'    # camera position in object space (for SH)
+        '};')
+    info.uniform_buf(0, 'SplatUniforms', 'u')
+    info.sampler(0, 'FLOAT_2D', 'dataTex')
+    info.sampler(1, 'FLOAT_2D', 'orderTex')
+    info.sampler(2, 'FLOAT_2D', 'shTex')
+    info.vertex_in(0, 'FLOAT', 'quadId')
+    info.vertex_in(1, 'FLOAT', 'cornerId')
+    iface = gpu.types.GPUStageInterfaceInfo(iface_name)
+    iface.smooth('VEC4', 'vColor')
+    iface.smooth('VEC2', 'vQuad')
+    info.vertex_out(iface)
+    info.fragment_out(0, 'VEC4', 'FragColor')
+    info.vertex_source(VERT_SRC)
+    info.fragment_source(frag_src)
+    return gpu.shader.create_from_info(info)
 
 
 def get_shader():
     global _shader
     if _shader is None:
-        info = gpu.types.GPUShaderCreateInfo()
-        info.typedef_source(
-            'struct SplatUniforms {'
-            '  mat4 modelView;'
-            '  mat4 projection;'
-            '  vec4 params;'    # viewport w, viewport h, size multiplier, opacity multiplier
-            '  vec4 params2;'   # reserved
-            '};')
-        info.uniform_buf(0, 'SplatUniforms', 'u')
-        info.sampler(0, 'FLOAT_2D', 'dataTex')
-        info.sampler(1, 'FLOAT_2D', 'orderTex')
-        info.vertex_in(0, 'FLOAT', 'quadId')
-        info.vertex_in(1, 'FLOAT', 'cornerId')
-        iface = gpu.types.GPUStageInterfaceInfo('pobim_splat_iface')
-        iface.smooth('VEC4', 'vColor')
-        iface.smooth('VEC2', 'vQuad')
-        info.vertex_out(iface)
-        info.fragment_out(0, 'VEC4', 'FragColor')
-        info.vertex_source(VERT_SRC)
-        info.fragment_source(FRAG_SRC)
-        _shader = gpu.shader.create_from_info(info)
+        _shader = _build_shader(FRAG_SRC, 'pobim_splat_iface')
     return _shader
+
+
+def get_pick_shader():
+    global _pick_shader
+    if _pick_shader is None:
+        _pick_shader = _build_shader(PICK_FRAG_SRC, 'pobim_splat_pick_iface')
+    return _pick_shader
 
 
 def _np_buffer(btype, arr):
@@ -223,6 +344,38 @@ class SplatGPU:
         self.data_tex = gpu.types.GPUTexture(
             (DATA_TEX_WIDTH, rows), format='RGBA32F',
             data=_np_buffer('FLOAT', texels.ravel()))
+
+        # SH texture: coefficients byte-packed 4-per-float / 16-per-texel in
+        # an RGBA32F texture (the Python API only uploads FLOAT buffers, and
+        # raw bit reinterpretation keeps memory at 1 byte per coefficient)
+        self.sh_bands = 0
+        self.sh_tex = None
+        self.sh_width = 0
+        if cloud.sh is not None and cloud.sh_bands > 0:
+            n_bytes = cloud.sh.shape[1]
+            tps = (n_bytes + 15) // 16
+            spr = 4096 // tps
+            self.sh_width = spr * tps
+            sh_rows = (n + spr - 1) // spr
+            if sh_rows <= MAX_TEX_HEIGHT:
+                # chunked packing keeps the temporary byte buffers bounded
+                # (~50MB) on multi-million-splat band-3 clouds
+                sh_texels = np.zeros((sh_rows * self.sh_width, 4), np.float32)
+                step = 1_000_000
+                for i in range(0, n, step):
+                    j = min(i + step, n)
+                    padded = np.zeros((j - i, tps * 16), np.uint8)
+                    padded[:, :n_bytes] = cloud.sh[i:j]
+                    packed = padded.view(np.uint32).view(np.float32)
+                    sh_base = np.arange(i, j, dtype=np.int64) * tps
+                    for t in range(tps):
+                        sh_texels[sh_base + t] = packed[:, t * 4:(t + 1) * 4]
+                self.sh_tex = gpu.types.GPUTexture(
+                    (self.sh_width, sh_rows), format='RGBA32F',
+                    data=_np_buffer('FLOAT', sh_texels.ravel()))
+                self.sh_bands = cloud.sh_bands
+            else:
+                print('[pobim_splats] SH texture too tall, skipping SH data')
 
         fmt = gpu.types.GPUVertFormat()
         fmt.attr_add(id='quadId', comp_type='F32', len=1, fetch_mode='FLOAT')
@@ -348,24 +501,22 @@ def _splat_objects():
     return result
 
 
-def _draw_callback():
-    context = bpy.context
-    region = context.region
-    rv3d = context.region_data
-    if region is None or rv3d is None or not REGISTRY:
-        return
+def ensure_gpu(entry, obj_name=''):
+    """Build GPU resources for an entry inside a GPU context. Returns SplatGPU or None."""
+    if entry.gpu is None and entry.error is None:
+        try:
+            entry.gpu = SplatGPU(entry.cloud)
+            entry.cloud.cov6 = entry.cloud.colors = None
+            entry.cloud.opacities = entry.cloud.sh = None
+        except Exception as e:
+            entry.error = str(e)
+            print(f'[pobim_splats] GPU build failed for {obj_name}: {e}')
+    return entry.gpu
 
-    scene = context.scene
-    if not getattr(scene, 'pobim_splats_enabled', True):
-        return
-    interval = getattr(scene, 'pobim_splat_sort_interval', 0.5)
 
+def _gather_draw_list(view):
+    """Visible splat entries with their model-view matrices, farthest first."""
     objects = _splat_objects()
-    view = np.array(rv3d.view_matrix, np.float32)
-    proj = np.array(rv3d.window_matrix, np.float32)
-
-    # gather visible entries with their model-view, farthest object first so
-    # inter-object blending is approximately correct
     draw_list = []
     for uid, entry in REGISTRY.items():
         obj = objects.get(uid)
@@ -379,9 +530,91 @@ def _draw_callback():
         model = np.array(obj.matrix_world, np.float32)
         mv = view @ model
         draw_list.append((mv[2, 3], entry, obj, mv))
+    draw_list.sort(key=lambda item: item[0])
+    return draw_list
+
+
+def render_depth_map(view, proj, width, height):
+    """Render visible splats' front-surface depth (gl_FragCoord.z in the red
+    channel) into an RGBA32F offscreen for the measure tool's Surface pick.
+    Caller owns the returned GPUOffScreen (call .free()). Returns None when
+    nothing is drawable."""
+    draw_list = _gather_draw_list(view)
+    if not draw_list:
+        return None
+
+    shader = get_pick_shader()
+    offs = gpu.types.GPUOffScreen(max(width, 1), max(height, 1), format='RGBA32F')
+    try:
+        with offs.bind():
+            fb = gpu.state.active_framebuffer_get()
+            fb.clear(color=(1.0, 0.0, 0.0, 0.0), depth=1.0)
+            gpu.state.blend_set('NONE')
+            gpu.state.depth_test_set('LESS_EQUAL')
+            gpu.state.depth_mask_set(True)
+            try:
+                for _, entry, obj, mv in draw_list:
+                    sg = ensure_gpu(entry, obj.name)
+                    if sg is None:
+                        continue
+                    params = np.array([
+                        width, height,
+                        getattr(obj, 'pobim_splat_scale', 1.0),
+                        getattr(obj, 'pobim_splat_opacity', 1.0),
+                        0.0, 0.0, 0.0, 0.0], np.float32)
+                    cam4 = np.zeros(4, np.float32)
+                    ubo = gpu.types.GPUUniformBuf(_np_buffer(
+                        'FLOAT',
+                        np.concatenate([mv.T.ravel(), proj.T.ravel(), params, cam4])))
+                    shader.bind()
+                    shader.uniform_block('u', ubo)
+                    shader.uniform_sampler('dataTex', sg.data_tex)
+                    shader.uniform_sampler('orderTex', sg.order_tex)
+                    shader.uniform_sampler('shTex', sg.data_tex)
+                    sg.batch.draw(shader)
+            finally:
+                gpu.state.depth_mask_set(True)
+                gpu.state.depth_test_set('NONE')
+                gpu.state.blend_set('NONE')
+    except Exception:
+        offs.free()
+        raise
+    return offs
+
+
+def read_depth_pixel(offs, x, y):
+    """Read one depth value (0..1) from a render_depth_map offscreen.
+    Returns None when the pixel is background."""
+    if offs is None:
+        return None
+    x = int(min(max(x, 0), offs.width - 1))
+    y = int(min(max(y, 0), offs.height - 1))
+    with offs.bind():
+        fb = gpu.state.active_framebuffer_get()
+        raw = fb.read_color(x, y, 1, 1, 4, 0, 'FLOAT')
+    z = float(raw.to_list()[0][0][0])
+    return None if z >= 1.0 - 1e-7 else z
+
+
+def _draw_callback():
+    context = bpy.context
+    region = context.region
+    rv3d = context.region_data
+    if region is None or rv3d is None or not REGISTRY:
+        return
+
+    scene = context.scene
+    if not getattr(scene, 'pobim_splats_enabled', True):
+        return
+    interval = getattr(scene, 'pobim_splat_sort_interval', 0.5)
+
+    view = np.array(rv3d.view_matrix, np.float32)
+    proj = np.array(rv3d.window_matrix, np.float32)
+
+    # farthest object first so inter-object blending is approximately correct
+    draw_list = _gather_draw_list(view)
     if not draw_list:
         return
-    draw_list.sort(key=lambda item: item[0])
 
     try:
         shader = get_shader()
@@ -394,30 +627,42 @@ def _draw_callback():
     gpu.state.depth_mask_set(False)
     try:
         for _, entry, obj, mv in draw_list:
-            if entry.gpu is None:
-                try:
-                    entry.gpu = SplatGPU(entry.cloud)
-                    entry.cloud.cov6 = entry.cloud.colors = entry.cloud.opacities = None
-                except Exception as e:
-                    entry.error = str(e)
-                    print(f'[pobim_splats] GPU build failed for {obj.name}: {e}')
-                    continue
+            sg = ensure_gpu(entry, obj.name)
+            if sg is None:
+                continue
 
-            sg = entry.gpu
             sg.sort_if_needed(mv, interval)
 
+            # actual framebuffer viewport in device pixels — region.width is
+            # in UI points and differs under display scaling, which would
+            # skew the pixel-space dilation/AA terms in the shader
+            try:
+                vx, vy, vw, vh = gpu.state.viewport_get()
+            except Exception:
+                vw, vh = region.width, region.height
+            if vw <= 0 or vh <= 0:
+                vw, vh = region.width, region.height
+
+            sh_bands = min(sg.sh_bands, getattr(obj, 'pobim_splat_sh_view', 3))
+            cam_obj = np.linalg.inv(mv)[:3, 3]
+
             params = np.array([
-                region.width, region.height,
+                vw, vh,
                 getattr(obj, 'pobim_splat_scale', 1.0),
                 getattr(obj, 'pobim_splat_opacity', 1.0),
-                0.0, 0.0, 0.0, 0.0], np.float32)
-            ubo_data = np.concatenate([mv.T.ravel(), proj.T.ravel(), params])
+                1.0 if getattr(scene, 'pobim_splats_aa', False) else 0.0,
+                sh_bands,
+                sg.sh_width,
+                1.0 if getattr(obj, 'pobim_splat_srgb', True) else 0.0], np.float32)
+            cam4 = np.array([cam_obj[0], cam_obj[1], cam_obj[2], 0.0], np.float32)
+            ubo_data = np.concatenate([mv.T.ravel(), proj.T.ravel(), params, cam4])
             ubo = gpu.types.GPUUniformBuf(_np_buffer('FLOAT', ubo_data))
 
             shader.bind()
             shader.uniform_block('u', ubo)
             shader.uniform_sampler('dataTex', sg.data_tex)
             shader.uniform_sampler('orderTex', sg.order_tex)
+            shader.uniform_sampler('shTex', sg.sh_tex if sg.sh_tex else sg.data_tex)
             sg.batch.draw(shader)
     finally:
         gpu.state.depth_mask_set(True)
@@ -460,8 +705,9 @@ def load_entry_for_object(obj):
     cloud = loader(
         filepath,
         max_splats=obj.pobim_splat_max,
-        srgb_to_linear=obj.pobim_splat_srgb)
+        max_sh_bands=obj.pobim_splat_shmax)
     obj.pobim_splat_count = cloud.count
+    obj.pobim_splat_sh_loaded = cloud.sh_bands
     REGISTRY[obj.pobim_splat_uid] = SplatEntry(obj.pobim_splat_uid, cloud)
     return cloud
 
