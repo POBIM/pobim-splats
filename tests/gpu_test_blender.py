@@ -107,7 +107,7 @@ def run_tests():
         shader.uniform_sampler('orderTex', sg.order_tex)
         shader.uniform_sampler('shTex', sg.sh_tex if sg.sh_tex else sg.data_tex)
         shader.uniform_sampler('stateTex', sg.data_tex)
-        sg.batch.draw(shader)
+        sg.batch.draw_instanced(shader, instance_count=sg.count)
         gpu.state.depth_mask_set(True)
         gpu.state.depth_test_set('NONE')
         gpu.state.blend_set('NONE')
@@ -121,6 +121,15 @@ def run_tests():
     log(f'OK offscreen draw: coverage={covered:.1%} maxAlpha={max_alpha:.3f}')
     if covered < 0.05:
         raise AssertionError(f'coverage too low: {covered:.1%} — splats not rendering')
+
+    # NEW (Track P): the instanced draw (4-vertex quad + gl_InstanceID) must
+    # reproduce the pre-change n*6-vertex VBO coverage exactly — same geometry,
+    # same shader math. Baseline recorded from a pre-instancing run.
+    EXPECTED_COVERAGE = 0.142
+    assert abs(covered - EXPECTED_COVERAGE) < 0.01, \
+        f'instanced coverage {covered:.1%} drifted from baseline {EXPECTED_COVERAGE:.1%}'
+    log(f'OK instanced coverage matches baseline '
+        f'({covered:.1%} vs {EXPECTED_COVERAGE:.1%})')
 
     # colored pixels present (rainbow torus, so all channels should appear)
     lit = pixels[pixels[..., 3] > 0.1]
@@ -164,7 +173,7 @@ def run_tests():
             shader.uniform_sampler('orderTex', sg2.order_tex)
             shader.uniform_sampler('shTex', sg2.sh_tex)
             shader.uniform_sampler('stateTex', sg2.data_tex)
-            sg2.batch.draw(shader)
+            sg2.batch.draw_instanced(shader, instance_count=sg2.count)
             gpu.state.blend_set('NONE')
             raw2 = fb2.read_color(0, 0, 128, 128, 4, 0, 'FLOAT')
             px2 = np.array(raw2.to_list(), np.float32).reshape(128, 128, 4)
@@ -204,7 +213,7 @@ def run_tests():
         pick_shader.uniform_sampler('orderTex', sg.order_tex)
         pick_shader.uniform_sampler('shTex', sg.data_tex)
         pick_shader.uniform_sampler('stateTex', sg.data_tex)
-        sg.batch.draw(pick_shader)
+        sg.batch.draw_instanced(pick_shader, instance_count=sg.count)
         gpu.state.depth_mask_set(True)
         gpu.state.depth_test_set('NONE')
         # pixel on the torus ring: ~0.5 ndc to the right of center
@@ -262,7 +271,7 @@ def run_tests():
             shader.uniform_sampler('orderTex', sgx.order_tex)
             shader.uniform_sampler('shTex', sgx.data_tex)
             shader.uniform_sampler('stateTex', sgx.data_tex)
-            sgx.batch.draw(shader)
+            sgx.batch.draw_instanced(shader, instance_count=sgx.count)
             gpu.state.blend_set('NONE')
             rawx = fbx.read_color(0, 0, SIZE, SIZE, 4, 0, 'FLOAT')
             out = np.array(rawx.to_list(), np.float32).reshape(SIZE, SIZE, 4)
@@ -401,7 +410,7 @@ def run_tests():
             shader.uniform_sampler('orderTex', sgx.order_tex)
             shader.uniform_sampler('shTex', sgx.data_tex)
             shader.uniform_sampler('stateTex', state_tex if state_tex else sgx.data_tex)
-            sgx.batch.draw(shader)
+            sgx.batch.draw_instanced(shader, instance_count=sgx.count)
             gpu.state.depth_mask_set(True)
             gpu.state.depth_test_set('NONE')
             gpu.state.blend_set('NONE')
@@ -480,7 +489,7 @@ def run_tests():
             shader.uniform_sampler('orderTex', sgT.order_tex)
             shader.uniform_sampler('shTex', sgT.data_tex)
             shader.uniform_sampler('stateTex', sgT.state_tex)
-            sgT.batch.draw(shader)
+            sgT.batch.draw_instanced(shader, instance_count=sgT.count)
             gpu.state.blend_set('NONE')
             rawx = fbx.read_color(0, 0, 256, 256, 4, 0, 'FLOAT')
             out = np.array(rawx.to_list(), np.float32).reshape(256, 256, 4)

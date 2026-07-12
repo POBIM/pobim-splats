@@ -20,6 +20,8 @@ import bpy
 import gpu
 import numpy as np
 
+from .depth_sort import compute_order
+
 # resort when the object-space view direction rotates more than ~1 degree.
 # depth order depends only on that direction — translation and zoom never
 # change it — so panning/zooming costs zero sorts.
@@ -37,10 +39,16 @@ MAX_SPLATS = SPLATS_PER_ROW * MAX_TEX_HEIGHT  # ~11.1M
 # (DEFAULT_SELECTED_CLR in the web editor's scene-config.ts: pure yellow)
 SELECTED_COLOR = (1.0, 1.0, 0.0)
 
-VERT_SRC = """
-const vec2 kCorners[4] = vec2[4](
-    vec2(-2.0, -2.0), vec2(2.0, -2.0), vec2(2.0, 2.0), vec2(-2.0, 2.0));
+# static instanced quad: one 4-vertex VBO shared by every splat instance.
+# the four corner signs (±2) are the same values the shader's old kCorners
+# const held; the 2-triangle index buffer reproduces the old per-splat
+# [0,1,2, 0,2,3] winding. Built once per cloud (constant size) instead of the
+# old n*6-vertex VBO (480 MB + 553 ms at 10M).
+_QUAD_CORNERS = np.array(
+    [[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]], np.float32)
+_QUAD_TRIS = [[0, 1, 2], [0, 2, 3]]
 
+VERT_SRC = """
 void emitDegenerate()
 {
     gl_Position = vec4(0.0, 0.0, 2.0, 0.0);
@@ -103,8 +111,10 @@ vec3 evalSH(int bands, int coeffsN, vec3 dir)
 
 void main()
 {
-    int quad = int(quadId + 0.5);
-    int corner = int(cornerId + 0.5);
+    // instanced draw: one instance per splat, so the splat's order-texture
+    // slot is gl_InstanceID (replaces the old per-vertex quadId attribute).
+    // the corner offset arrives directly as the `corner` vertex attribute.
+    int quad = gl_InstanceID;
 
     // order texture is R32F: float32 holds integers exactly up to 2^24,
     // above our MAX_SPLATS cap (Blender's Python API can only upload FLOAT buffers)
@@ -288,7 +298,7 @@ void main()
     }
 
     vColor = vec4(rgb, d0.w * u.params.w * aaFactor);
-    vec2 c = kCorners[corner];
+    vec2 c = corner;
     vQuad = c;
 
     // The 2.0 factor converts the pixel half-extent to NDC (NDC spans 2
@@ -366,8 +376,8 @@ def _build_shader(frag_src, iface_name):
     info.sampler(1, 'FLOAT_2D', 'orderTex')
     info.sampler(2, 'FLOAT_2D', 'shTex')
     info.sampler(3, 'FLOAT_2D', 'stateTex')
-    info.vertex_in(0, 'FLOAT', 'quadId')
-    info.vertex_in(1, 'FLOAT', 'cornerId')
+    # single static quad-corner attribute; the splat index is gl_InstanceID
+    info.vertex_in(0, 'VEC2', 'corner')
     iface = gpu.types.GPUStageInterfaceInfo(iface_name)
     iface.smooth('VEC4', 'vColor')
     iface.smooth('VEC2', 'vQuad')
@@ -473,20 +483,28 @@ class SplatGPU:
             else:
                 print('[pobim_splats] SH texture too tall, skipping SH data')
 
+        # instanced geometry: a single static 4-vertex quad + 2-triangle index
+        # buffer, drawn once per splat via draw_instanced (splat index =
+        # gl_InstanceID). Constant size regardless of splat count.
         fmt = gpu.types.GPUVertFormat()
-        fmt.attr_add(id='quadId', comp_type='F32', len=1, fetch_mode='FLOAT')
-        fmt.attr_add(id='cornerId', comp_type='F32', len=1, fetch_mode='FLOAT')
-        vbo = gpu.types.GPUVertBuf(fmt, n * 6)
-        _attr_fill(vbo, 'quadId', np.repeat(np.arange(n, dtype=np.float32), 6))
-        _attr_fill(vbo, 'cornerId', np.tile(np.array([0, 1, 2, 0, 2, 3], np.float32), n))
+        fmt.attr_add(id='corner', comp_type='F32', len=2, fetch_mode='FLOAT')
+        vbo = gpu.types.GPUVertBuf(fmt, 4)
+        _attr_fill(vbo, 'corner', _QUAD_CORNERS)
         self.vbo = vbo
-        self.batch = gpu.types.GPUBatch(type='TRIS', buf=vbo)
+        self.index_buf = gpu.types.GPUIndexBuf(type='TRIS', seq=_QUAD_TRIS)
+        self.batch = gpu.types.GPUBatch(type='TRIS', buf=vbo, elem=self.index_buf)
 
         # bumped by update_splats; lets pickers/caches (e.g. the edit tool's
         # subsampled _pick_local) detect that positions changed and refresh
         self.geometry_version = 0
 
         self.order_rows = (n + ORDER_TEX_WIDTH - 1) // ORDER_TEX_WIDTH
+        # reusable CPU staging buffers for the order / state R32F textures —
+        # allocated once and refilled in place on each upload (P3: avoids
+        # reallocating the ~40 MB padded array on every sort at 10M splats).
+        # Only [:count] is ever written, so the padding tail stays zero.
+        self._order_scratch = np.zeros(self.order_rows * ORDER_TEX_WIDTH, np.float32)
+        self._state_scratch = np.zeros(self.order_rows * ORDER_TEX_WIDTH, np.float32)
         self.order_tex = None
         # per-splat edit-state texture (R32F, one texel/splat), uploaded
         # lazily from a SplatState and refreshed on version bumps
@@ -499,8 +517,9 @@ class SplatGPU:
         self._upload_order(np.arange(n, dtype=np.int32))
 
     def _upload_order(self, order):
-        padded = np.zeros(self.order_rows * ORDER_TEX_WIDTH, np.float32)
-        padded[:self.count] = order.astype(np.float32)
+        # refill the persistent staging buffer in place (P3); tail stays zero
+        padded = self._order_scratch
+        padded[:self.count] = order
         self.order_tex = gpu.types.GPUTexture(
             (ORDER_TEX_WIDTH, self.order_rows), format='R32F',
             data=_np_buffer('FLOAT', padded))
@@ -508,8 +527,8 @@ class SplatGPU:
     def upload_state(self, flags):
         """Upload per-splat edit flags into an R32F texture (value =
         float(flags)), addressed the same way as the order texture."""
-        padded = np.zeros(self.order_rows * ORDER_TEX_WIDTH, np.float32)
-        padded[:self.count] = flags.astype(np.float32)
+        padded = self._state_scratch
+        padded[:self.count] = flags
         self.state_tex = gpu.types.GPUTexture(
             (ORDER_TEX_WIDTH, self.order_rows), format='R32F',
             data=_np_buffer('FLOAT', padded))
@@ -552,7 +571,9 @@ class SplatGPU:
             try:
                 # view-space z (negative in front); ascending = farthest first.
                 # the constant translation term never changes the order.
-                order = np.argsort(positions @ row).astype(np.int32)
+                # O(N) uint16-bin radix sort (depth_sort.compute_order):
+                # ~155 ms vs ~540 ms for the old float argsort at 10M.
+                order, _behind = compute_order(positions, row)
                 self._sort_result = (order, direction)
             except Exception as e:
                 print(f'[pobim_splats] sort failed: {e}')
@@ -628,6 +649,12 @@ class SplatEntry:
         self.error = None
         self.state = None   # SplatState, created lazily on first edit
         self.edits = None   # SplatEdits geometry overrides (Phase 3 Track T)
+        # last serialized state string that self.state corresponds to (== the
+        # obj['pobim_splat_state'] property at the moment it was written). The
+        # undo/redo resync handler compares the reverted property against this
+        # to detect when Blender's global undo rolled the property back but not
+        # the in-memory SplatState / GPU texture. None means "no state".
+        self.state_payload = None
 
 
 # uid -> SplatEntry (session state; rebuilt from object properties on file open)
@@ -672,6 +699,75 @@ def _splat_objects():
         if uid:
             result[uid] = obj
     return result
+
+
+def persist_state(obj, entry):
+    """Serialize ``entry.state`` into ``obj['pobim_splat_state']`` and cache the
+    exact payload on the entry.
+
+    Every writer of the state property must go through here so ``resync_states``
+    can trust ``entry.state_payload`` as "the property value that matches the
+    in-memory state". A no-state entry clears the property + cache.
+    """
+    if entry is None:
+        return
+    if entry.state is None:
+        if obj.get('pobim_splat_state') is not None:
+            try:
+                del obj['pobim_splat_state']
+            except Exception:
+                pass
+        entry.state_payload = None
+        return
+    s = entry.state.serialize()
+    obj['pobim_splat_state'] = s
+    entry.state_payload = s
+
+
+def resync_states(*_args):
+    """Undo/redo post handler: rebuild in-memory SplatState from the property.
+
+    Blender's global undo reverts ``obj['pobim_splat_state']`` (an ID custom
+    property) but never the Python-session ``entry.state`` or its GPU texture.
+    After a non-modal Separate (which soft-deletes on the source), Ctrl+Z would
+    otherwise leave the separated gaussians invisible on the source until a
+    manual Reload. A cheap string compare against the cached payload catches the
+    divergence and re-decodes whatever the property now holds. Also handles redo
+    (registered on redo_post) since the sync direction is symmetric.
+    """
+    changed_any = False
+    for obj in bpy.data.objects:
+        uid = getattr(obj, 'pobim_splat_uid', '')
+        if not uid:
+            continue
+        entry = REGISTRY.get(uid)
+        if entry is None:
+            continue
+        prop = obj.get('pobim_splat_state')
+        if prop == entry.state_payload:
+            continue  # in sync (covers the common None == None case)
+        if prop:
+            try:
+                from .splat_state import SplatState  # lazy: avoids import cycle
+                entry.state = SplatState.deserialize(prop, entry.cloud.count)
+                entry.state_payload = prop
+            except Exception as e:
+                # a payload that can't be decoded is not trustworthy; leave the
+                # in-memory state as-is rather than corrupting the export mask
+                print(f'[pobim_splats] undo state resync failed for '
+                      f'{obj.name}: {e}')
+                continue
+        else:
+            # the property reverted to absent -> there was no edit state before;
+            # drop it so the shader stops sampling the (stale) state texture
+            entry.state = None
+            entry.state_payload = None
+        # force the draw callback to re-upload the state texture next frame
+        if entry.gpu is not None:
+            entry.gpu.state_version = -1
+        changed_any = True
+    if changed_any:
+        redraw_viewports()
 
 
 def _apply_persisted_edits(entry):
@@ -804,7 +900,8 @@ def render_depth_map(view, proj, width, height):
                     shader.uniform_sampler('orderTex', sg.order_tex)
                     shader.uniform_sampler('shTex', sg.data_tex)
                     shader.uniform_sampler('stateTex', sg.state_tex if sg.state_tex else sg.data_tex)
-                    sg.batch.draw(shader)
+                    # one instance per splat; gl_InstanceID is the splat index
+                    sg.batch.draw_instanced(shader, instance_count=sg.count)
             finally:
                 gpu.state.depth_mask_set(True)
                 gpu.state.depth_test_set('NONE')
@@ -921,7 +1018,8 @@ def _draw_callback():
             shader.uniform_sampler('orderTex', sg.order_tex)
             shader.uniform_sampler('shTex', sg.sh_tex if sg.sh_tex else sg.data_tex)
             shader.uniform_sampler('stateTex', sg.state_tex if sg.state_tex else sg.data_tex)
-            sg.batch.draw(shader)
+            # one instance per splat; gl_InstanceID is the splat index
+            sg.batch.draw_instanced(shader, instance_count=sg.count)
     finally:
         gpu.state.depth_mask_set(True)
         gpu.state.depth_test_set('NONE')
@@ -960,10 +1058,49 @@ def load_entry_for_object(obj):
     else:
         from .ply_loader import load_gaussian_ply as loader
 
+    # subset objects (Duplicate/Separate Selection) persist absolute source-
+    # file row indices. They MUST load the full file (max_splats=0): random
+    # subsampling would not contain the stored rows. On a full load
+    # source_indices is identity, so the absolute rows ARE the slice indices.
+    subset_payload = obj.get('pobim_splat_subset')
+    subset_rows = None
+    if subset_payload:
+        try:
+            from .splat_state import deserialize_rows  # lazy: avoids cycle
+            subset_rows = deserialize_rows(subset_payload)
+        except Exception as e:
+            print(f'[pobim_splats] discarding stale subset for {obj.name}: {e}')
+            try:
+                del obj['pobim_splat_subset']
+            except Exception:
+                pass
+            subset_rows = None
+
     cloud = loader(
         filepath,
-        max_splats=obj.pobim_splat_max,
+        max_splats=0 if subset_rows is not None else obj.pobim_splat_max,
         max_sh_bands=obj.pobim_splat_shmax)
+
+    if subset_rows is not None:
+        # a valid subset is non-empty and every row is in [0, cloud.count).
+        # guard empties and negatives too — a negative int64 would silently
+        # fancy-index from the END of the arrays and split off the wrong rows.
+        bad = (subset_rows.size == 0 or
+               int(subset_rows.min()) < 0 or
+               int(subset_rows.max()) >= cloud.count)
+        if bad:
+            detail = ('empty' if subset_rows.size == 0
+                      else f'row {int(subset_rows.min())}..{int(subset_rows.max())} '
+                           f'out of [0,{cloud.count})')
+            print(f'[pobim_splats] discarding invalid subset for '
+                  f'{obj.name}: {detail}')
+            try:
+                del obj['pobim_splat_subset']
+            except Exception:
+                pass
+        else:
+            cloud = cloud.take(subset_rows)
+
     obj.pobim_splat_count = cloud.count
     obj.pobim_splat_sh_loaded = cloud.sh_bands
     entry = SplatEntry(obj.pobim_splat_uid, cloud)
@@ -975,6 +1112,7 @@ def load_entry_for_object(obj):
         try:
             from .splat_state import SplatState  # lazy: avoids import cycle
             entry.state = SplatState.deserialize(s, cloud.count)
+            entry.state_payload = s   # seed the resync cache (see resync_states)
         except Exception as e:
             print(f'[pobim_splats] discarding stale edit state for {obj.name}: {e}')
             try:

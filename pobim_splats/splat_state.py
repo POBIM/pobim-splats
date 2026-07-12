@@ -23,6 +23,46 @@ _CLR_SELECTED = np.uint8(0xFF ^ State.SELECTED)
 _CLR_HIDDEN = np.uint8(0xFF ^ State.HIDDEN)
 
 
+def serialize_rows(rows):
+    """Serialize absolute source-file row indices (Duplicate/Separate subsets).
+
+    Format mirrors the other payloads: an 8-byte little-endian uint64 count
+    header (= number of indices) + zlib(level 6) of the int64 row bytes, then
+    base64 ascii. bpy-free + unit-testable.
+    """
+    rows = np.asarray(rows, dtype=np.int64).ravel()
+    body = np.ascontiguousarray(rows, '<i8').tobytes()
+    payload = int(rows.size).to_bytes(8, 'little') + zlib.compress(body, 6)
+    return base64.b64encode(payload).decode('ascii')
+
+
+def deserialize_rows(s):
+    """Restore serialized row indices as an int64 array.
+
+    Raises ValueError on a corrupt payload or when the stored count does not
+    match the decoded index count — callers drop the stale property and
+    continue. An empty/None string yields an empty array.
+    """
+    if not s:
+        return np.zeros(0, np.int64)
+    try:
+        payload = base64.b64decode(s)
+    except Exception as e:
+        raise ValueError(f'splat subset not valid base64: {e}')
+    if len(payload) < 8:
+        raise ValueError('splat subset payload truncated')
+    stored = int.from_bytes(payload[:8], 'little')
+    try:
+        body = zlib.decompress(payload[8:])
+    except Exception as e:
+        raise ValueError(f'splat subset payload corrupt: {e}')
+    rows = np.frombuffer(body, '<i8')
+    if rows.size != stored:
+        raise ValueError(
+            f'splat subset count mismatch: header {stored}, decoded {rows.size}')
+    return rows.copy()
+
+
 class SplatState:
     """Editable per-splat state for one cloud.
 
@@ -115,6 +155,19 @@ class SplatState:
     @property
     def num_selected(self):
         return int(((self.flags & State.SELECTED) != 0).sum())
+
+    @property
+    def num_selected_exact(self):
+        """Count of splats flagged EXACTLY State.SELECTED (no HIDDEN/DELETED).
+
+        This is the Duplicate/Separate eligibility count: those operators
+        mirror SuperSplat's strict ``state == State.selected`` filter, so a
+        selected-but-hidden/deleted gaussian is not eligible to split off.
+        Enable/label the split buttons on THIS, not ``num_selected`` (the
+        SELECTED bit), so the buttons never enable on an all-hidden selection
+        that the operator would then reject.
+        """
+        return int((self.flags == State.SELECTED).sum())
 
     @property
     def num_hidden(self):

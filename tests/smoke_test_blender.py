@@ -86,7 +86,12 @@ def main():
                     [0, 0, -1, 0]], np.float32)
                 sg.sort_if_needed(view, 0.0)
                 params = np.array([256, 256, 1.0, 1.0, 0, 0, 0, 0], np.float32)
-                ubo_data = np.concatenate([view.T.ravel(), proj.T.ravel(), params])
+                cam4 = np.array([0, 0, 8.0, 0], np.float32)
+                sel4 = np.zeros(4, np.float32)   # a=0 skips the state fetch
+                prev4 = np.eye(4, dtype=np.float32).ravel()
+                misc = np.zeros(4, np.float32)
+                ubo_data = np.concatenate([view.T.ravel(), proj.T.ravel(),
+                                           params, cam4, sel4, prev4, misc])
                 ubo = gpu.types.GPUUniformBuf(
                     splat_gpu._np_buffer('FLOAT', ubo_data))
                 shader = splat_gpu.get_shader()
@@ -95,7 +100,9 @@ def main():
                 shader.uniform_block('u', ubo)
                 shader.uniform_sampler('dataTex', sg.data_tex)
                 shader.uniform_sampler('orderTex', sg.order_tex)
-                sg.batch.draw(shader)
+                shader.uniform_sampler('shTex', sg.sh_tex if sg.sh_tex else sg.data_tex)
+                shader.uniform_sampler('stateTex', sg.data_tex)
+                sg.batch.draw_instanced(shader, instance_count=sg.count)
                 gpu.state.blend_set('NONE')
                 pixels = np.array(fb.read_color(0, 0, 256, 256, 4, 0, 'FLOAT').to_list())
             offs.free()
@@ -331,6 +338,161 @@ def main():
             del obj['pobim_splat_edits']
         entry.edits = None
     check('edit overrides serialize + restore path exercised', edit_overrides_restore)
+
+    def duplicate_and_separate():
+        # Track F end-to-end: Duplicate splits a SELECTED subset into a new
+        # object that references the same file but persists only the chosen
+        # absolute rows; intersecting transform edits are carried over and
+        # survive a simulated reload. Separate additionally soft-deletes the
+        # rows on the source, and the source export then drops them.
+        import numpy as np
+        from pobim_splats.splat_state import SplatState, deserialize_rows
+        from pobim_splats.splat_edits import SplatEdits
+        from pobim_splats.ply_loader import load_gaussian_ply
+
+        obj = bpy.data.objects['torus']
+        uid = obj.pobim_splat_uid
+        entry = splat_gpu.REGISTRY[uid]
+        cloud = entry.cloud
+        count = cloud.count
+
+        # a deterministic selection on non-deleted rows + edits on a subset
+        sel = np.array([1, 3, 5, 7, 9, 11], np.int64)
+        state = SplatState(count)
+        state.select_indices(sel, 'set')
+        entry.state = state
+        obj['pobim_splat_state'] = state.serialize()
+
+        ed = SplatEdits(count)
+        M = np.eye(4)
+        M[:3, 3] = [7.0, 8.0, 9.0]
+        ed.apply_matrix(np.array([1, 3], np.int64), M,
+                        cloud.positions, cloud.quats, cloud.scales_log)
+        entry.edits = ed
+        obj['pobim_splat_edits'] = ed.serialize()
+
+        # --- Duplicate ---------------------------------------------------
+        assert bpy.ops.pobim_splats.duplicate_selection(uid=uid) == {'FINISHED'}
+        dup = bpy.data.objects.get('torus Selection')
+        assert dup is not None, 'duplicate object not created'
+        assert dup.pobim_splat_count == sel.size, dup.pobim_splat_count
+        rows = deserialize_rows(dup['pobim_splat_subset'])
+        assert np.array_equal(rows, sel), rows
+        # source per-gaussian flags untouched by Duplicate (TS parity)
+        assert entry.state.num_deleted == 0
+        assert entry.state.num_selected == sel.size
+
+        # carried transform edits: rows 1,3 -> subset-local indices 0,1
+        dup_entry = splat_gpu.REGISTRY[dup.pobim_splat_uid]
+        assert dup_entry.edits is not None, 'carried edits missing'
+        assert set(np.nonzero(dup_entry.edits.dirty)[0].tolist()) == {0, 1}, \
+            np.nonzero(dup_entry.edits.dirty)[0].tolist()
+
+        # simulated save/reload of the subset object rebuilds from properties
+        splat_gpu.REGISTRY.pop(dup.pobim_splat_uid, None)
+        splat_gpu.load_entry_for_object(dup)
+        re = splat_gpu.REGISTRY[dup.pobim_splat_uid]
+        assert re.cloud.count == sel.size, re.cloud.count
+        # source_indices of the reloaded subset are the absolute file rows
+        assert np.array_equal(re.cloud.source_indices, sel)
+        assert re.edits is not None and \
+            set(np.nonzero(re.edits.dirty)[0].tolist()) == {0, 1}, \
+            'carried edits lost on reload'
+
+        # --- Separate ----------------------------------------------------
+        state2 = SplatState(count)
+        sep_sel = np.array([7, 9, 11], np.int64)
+        state2.select_indices(sep_sel, 'set')
+        entry.state = state2
+        obj['pobim_splat_state'] = state2.serialize()
+        entry.edits = None
+        if 'pobim_splat_edits' in obj.keys():
+            del obj['pobim_splat_edits']
+
+        assert bpy.ops.pobim_splats.separate_selection(uid=uid) == {'FINISHED'}
+        # deleted rows keep SELECTED and gain DELETED (selected|deleted)
+        assert entry.state.num_deleted == sep_sel.size, entry.state.num_deleted
+        for r in sep_sel:
+            f = int(entry.state.flags[r])
+            assert f & 1 and f & 4, f
+        # source export drops the separated rows
+        out = os.path.join(tmp, 'export_after_sep.ply')
+        assert bpy.ops.pobim_splats.export_ply(
+            filepath=out, uid=uid) == {'FINISHED'}
+        exported = load_gaussian_ply(out)
+        assert exported.count == count - sep_sel.size, \
+            (exported.count, count, sep_sel.size)
+
+        # tidy up the two subset objects so later checks see only 'torus'
+        for name in ('torus Selection', 'torus Selection.001'):
+            o = bpy.data.objects.get(name)
+            if o is not None:
+                splat_gpu.REGISTRY.pop(o.pobim_splat_uid, None)
+                bpy.data.objects.remove(o)
+        # restore a clean source state for the remaining checks
+        entry.state = None
+        for k in ('pobim_splat_state', 'pobim_splat_edits'):
+            if k in obj.keys():
+                del obj[k]
+        splat_gpu.load_entry_for_object(obj)
+    check('duplicate + separate selection end-to-end', duplicate_and_separate)
+
+    def undo_resync():
+        # MAJOR regression (audit): Blender's global undo reverts the
+        # obj['pobim_splat_state'] ID custom property but NOT the Python-session
+        # entry.state / GPU texture. After a non-modal Separate + Ctrl+Z the
+        # source would keep showing the separated gaussians as deleted until a
+        # manual Reload. resync_states() (the undo_post/redo_post handler) must
+        # rebuild the in-memory state from whatever the reverted property holds.
+        # This test drives resync_states() directly; without the fix (a no-op /
+        # absent handler) the assertions below fail — entry.state keeps the
+        # deletion / stays populated.
+        import numpy as np
+        from pobim_splats.splat_state import SplatState, State
+        obj = bpy.data.objects['torus']
+        uid = obj.pobim_splat_uid
+        entry = splat_gpu.REGISTRY[uid]
+        count = entry.cloud.count
+
+        # Case A: property reverts to an OLDER value (undo of a Separate).
+        sel = np.array([2, 4, 6], np.int64)
+        pre = SplatState(count)
+        pre.select_indices(sel, 'set')
+        pre_payload = pre.serialize()          # what undo restores the prop to
+
+        post = SplatState(count)
+        post.select_indices(sel, 'set')
+        post.set_flags_raw(sel, (post.flags[sel] | State.DELETED).astype(np.uint8))
+        entry.state = post
+        splat_gpu.persist_state(obj, entry)    # prop + cache == post
+        assert entry.state.num_deleted == sel.size
+        # simulate Blender rolling the ID property back to the pre-Separate value
+        obj['pobim_splat_state'] = pre_payload
+        splat_gpu.resync_states()
+        assert entry.state.num_deleted == 0, \
+            f'resync did not clear deletion: {entry.state.num_deleted}'
+        assert entry.state.num_selected == sel.size, entry.state.num_selected
+        assert entry.state_payload == pre_payload, 'cache not updated after resync'
+
+        # Case B: property reverts to ABSENT (undo back before any edit existed).
+        splat_gpu.persist_state(obj, entry)    # prop + cache present again
+        del obj['pobim_splat_state']
+        splat_gpu.resync_states()
+        assert entry.state is None, 'resync should drop state when prop is gone'
+        assert entry.state_payload is None
+
+        # Case C: in-sync objects are a cheap no-op (no exceptions, state kept).
+        entry.state = None
+        splat_gpu.resync_states()
+        assert entry.state is None
+
+        # leave the source clean for later checks
+        entry.state = None
+        entry.state_payload = None
+        for k in ('pobim_splat_state', 'pobim_splat_edits'):
+            if k in obj.keys():
+                del obj[k]
+    check('undo/redo resync rebuilds source state', undo_resync)
 
     def reload_and_remove():
         obj = bpy.data.objects['torus']

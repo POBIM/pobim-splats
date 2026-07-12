@@ -102,6 +102,18 @@ modes, undo/redo and Done — hotkeys are optional:
 - **H** hide selected · **Alt+H** unhide all
 - **X / Del** delete selected (soft — undoable)
 - **Ctrl+Z / Ctrl+Shift+Z** undo/redo (selections AND transforms)
+- **Duplicate / Separate** the selection into a new splat object — HUD chips
+  or the panel buttons (only the strictly-*selected* gaussians, excluding any
+  that are also hidden/deleted). **Duplicate** leaves the source untouched;
+  **Separate** additionally soft-deletes those gaussians from the source. The
+  new object references the same source `.ply` but persists only the chosen
+  rows (`pobim_splat_subset`), so export stays lossless; intersecting
+  transform edits are carried over, while the copy starts with a fresh
+  selection/hidden/deleted state. Separate's undo is **two-step** in Blender
+  (one **Ctrl+Z** removes the new object, a second restores the source
+  deletion), but each step is clean: undo automatically re-syncs the source's
+  in-memory/GPU state from the reverted `.blend` data, so the separated
+  gaussians reappear on the source without a manual Reload.
 - **Esc / right-click** exits; selections, hidden/deleted state and
   transforms all persist in the .blend
 

@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'POBIM Splats — 3D Gaussian Splatting Viewer',
     'author': 'POBIM',
-    'version': (0, 7, 0),
+    'version': (0, 8, 0),
     'blender': (4, 2, 0),
     'location': 'View3D > Sidebar (N) > POBIM3DGS',
     'description': 'Import and display 3D Gaussian Splatting .ply files with a real GPU splat renderer',
@@ -13,7 +13,7 @@ from bpy.app.handlers import persistent
 from bpy.props import (
     BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty)
 
-from . import edit_tools, measure, operators, splat_gpu, ui
+from . import edit_tools, measure, operators, splat_gpu, splat_ops, ui
 
 
 def _redraw(self, context):
@@ -30,6 +30,14 @@ def _on_load_post(_dummy):
 @persistent
 def _on_depsgraph_update(scene, depsgraph=None):
     splat_gpu.on_depsgraph_update(scene, depsgraph)
+
+
+@persistent
+def _on_undo_redo(*_args):
+    """After global undo/redo, re-sync in-memory SplatState from the reverted
+    property (Blender rolls back the ID custom property but not our session
+    state / GPU texture — see splat_gpu.resync_states)."""
+    splat_gpu.resync_states()
 
 
 def register():
@@ -107,7 +115,8 @@ def register():
                     'Alt+ลูกกลิ้ง ±10% · [ ] ปรับทีละขั้น · หรือลากแถบ Radius บน HUD)',
         default=0.25, min=1e-3, max=100.0)
 
-    for cls in operators.CLASSES + measure.CLASSES + edit_tools.CLASSES + ui.CLASSES:
+    for cls in (operators.CLASSES + measure.CLASSES + edit_tools.CLASSES
+                + splat_ops.CLASSES + ui.CLASSES):
         bpy.utils.register_class(cls)
 
     splat_gpu.register_draw_handler()
@@ -115,16 +124,25 @@ def register():
         bpy.app.handlers.load_post.append(_on_load_post)
     if _on_depsgraph_update not in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph_update)
+    if _on_undo_redo not in bpy.app.handlers.undo_post:
+        bpy.app.handlers.undo_post.append(_on_undo_redo)
+    if _on_undo_redo not in bpy.app.handlers.redo_post:
+        bpy.app.handlers.redo_post.append(_on_undo_redo)
 
 
 def unregister():
+    if _on_undo_redo in bpy.app.handlers.redo_post:
+        bpy.app.handlers.redo_post.remove(_on_undo_redo)
+    if _on_undo_redo in bpy.app.handlers.undo_post:
+        bpy.app.handlers.undo_post.remove(_on_undo_redo)
     if _on_depsgraph_update in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph_update)
     if _on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_on_load_post)
     splat_gpu.unregister_draw_handler()
 
-    for cls in reversed(operators.CLASSES + measure.CLASSES + edit_tools.CLASSES + ui.CLASSES):
+    for cls in reversed(operators.CLASSES + measure.CLASSES + edit_tools.CLASSES
+                        + splat_ops.CLASSES + ui.CLASSES):
         bpy.utils.unregister_class(cls)
 
     del bpy.types.Object.pobim_splat_uid

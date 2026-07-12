@@ -81,7 +81,7 @@ def render():
         shader.uniform_sampler('orderTex', sg.order_tex)
         shader.uniform_sampler('shTex', sg.sh_tex if sg.sh_tex else sg.data_tex)
         shader.uniform_sampler('stateTex', sg.data_tex)
-        sg.batch.draw(shader)
+        sg.batch.draw_instanced(shader, instance_count=sg.count)
         gpu.state.depth_mask_set(True)
         gpu.state.depth_test_set('NONE')
         gpu.state.blend_set('NONE')

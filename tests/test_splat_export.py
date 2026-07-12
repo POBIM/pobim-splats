@@ -217,8 +217,71 @@ def test_patched_canonical(tmp):
     assert np.allclose(dec.scales_log[idx], nsl, atol=1e-5)
 
 
+def test_selected_only_mask(tmp):
+    """selected_only export = (not deleted) AND selected. Build that composed
+    mask (as the operator does) and assert only those file rows survive,
+    byte-identical."""
+    path = os.path.join(tmp, 'src_sel.ply')
+    out = os.path.join(tmp, 'out_sel.ply')
+    pos, scales, quat, sh0, opacity = make_torus_splats(2000)
+    rng = np.random.default_rng(21)
+    sh_rest = rng.uniform(-2.0, 2.0, (2000, 9)).astype(np.float32)
+    write_gaussian_ply(path, pos, scales, quat, sh0, opacity, sh_rest)
+
+    selected = np.zeros(2000, bool)
+    selected[::3] = True                   # a scattered selection
+    deleted = np.zeros(2000, bool)
+    deleted[::10] = True                   # some overlap with the selection
+    keep = (~deleted) & selected           # the selected_only keep_mask
+
+    n = export_ply(path, out, keep_mask=keep)
+    assert n == int(keep.sum()), n
+    src = load_raw_ply(path)
+    got = load_raw_ply(out)
+    assert got['count'] == int(keep.sum())
+    assert got['vertex'].tobytes() == src['vertex'][keep].tobytes(), \
+        'selected_only survivors must be byte-identical'
+
+
+def test_duplicate_object_export(tmp):
+    """A Duplicate/Separate subset object references the SAME source file but
+    carries source_indices = the chosen absolute rows. Its export must be
+    byte-identical to the matching source rows (untouched rows lossless)."""
+    path = os.path.join(tmp, 'src_dup.ply')
+    out = os.path.join(tmp, 'out_dup.ply')
+    pos, scales, quat, sh0, opacity = make_torus_splats(3000)
+    rng = np.random.default_rng(4)
+    sh_rest = rng.uniform(-2.0, 2.0, (3000, 9)).astype(np.float32)
+    write_gaussian_ply(path, pos, scales, quat, sh0, opacity, sh_rest)
+
+    # the subset's source_indices are the absolute file rows it kept (sorted,
+    # as produced by SplatState selection -> np.nonzero)
+    subset_rows = np.array(
+        sorted(rng.choice(3000, 400, replace=False)), np.int64)
+
+    # export the whole subset (no deletions): every subset row round-trips
+    n_all = export_ply(path, out, source_indices=subset_rows)
+    assert n_all == subset_rows.size
+    src = load_raw_ply(path)
+    got = load_raw_ply(out)
+    assert got['vertex'].tobytes() == src['vertex'][subset_rows].tobytes(), \
+        'duplicate-object export not byte-identical to source rows'
+
+    # a Separate-style soft-delete inside the subset drops those subset rows
+    keep = np.ones(subset_rows.size, bool)
+    keep[5] = keep[100] = False
+    out2 = os.path.join(tmp, 'out_dup2.ply')
+    n2 = export_ply(path, out2, keep_mask=keep, source_indices=subset_rows)
+    expected = subset_rows[keep]
+    assert n2 == expected.size
+    got2 = load_raw_ply(out2)
+    assert got2['vertex'].tobytes() == src['vertex'][expected].tobytes()
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
+        test_selected_only_mask(tmp)
+        test_duplicate_object_export(tmp)
         test_roundtrip_keep_mask(tmp)
         test_keep_mask_none_exports_all(tmp)
         test_subsample_mapping(tmp)

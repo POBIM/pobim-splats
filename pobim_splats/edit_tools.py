@@ -117,6 +117,10 @@ _HUD_ROW1 = [
     _HUD_SEP,
     ('xform:MOVE', 'Move'), ('xform:ROTATE', 'Rotate'), ('xform:SCALE', 'Scale'),
     _HUD_SEP,
+    ('sel:all', 'All'), ('sel:none', 'None'), ('sel:invert', 'Invert'),
+    _HUD_SEP,
+    ('obj:dup', 'Duplicate'), ('obj:sep', 'Separate'),
+    _HUD_SEP,
     ('undo', 'Undo'), ('redo', 'Redo'),
     _HUD_SEP,
     ('done', 'Done'),
@@ -405,7 +409,9 @@ class POBIM_OT_edit_splats(bpy.types.Operator):
         """Serialize flag state to the object and refresh status + viewport."""
         obj = bpy.data.objects.get(self._obj_name)
         if obj is not None:
-            obj[_STATE_PROP] = self._state.serialize()
+            # go through persist_state so entry.state_payload stays the cached
+            # mirror of the property (undo/redo resync relies on it)
+            splat_gpu.persist_state(obj, self._entry)
         self._set_status(context)
         splat_gpu.redraw_viewports()
         if context.area:
@@ -1213,6 +1219,11 @@ class POBIM_OT_edit_splats(bpy.types.Operator):
             return not self._history.can_undo
         if cid == 'redo':
             return not self._history.can_redo
+        if cid in ('obj:dup', 'obj:sep'):
+            # Duplicate/Separate need rows flagged EXACTLY SELECTED (the
+            # operator's strict filter) — not just the SELECTED bit, or an
+            # all-hidden selection would enable the chip then error out.
+            return self._state.num_selected_exact == 0
         return False
 
     def _hud_hit(self, region, mx, my):
@@ -1230,6 +1241,16 @@ class POBIM_OT_edit_splats(bpy.types.Operator):
             self._switch_tool(context, cid.split(':', 1)[1])
         elif cid.startswith('xform:'):
             self._enter_transform(context, cid.split(':', 1)[1])
+        elif cid == 'sel:all':
+            self._apply(context, 'Select All', self._state.select_all)
+        elif cid == 'sel:none':
+            self._apply(context, 'Select None', self._state.select_none)
+        elif cid == 'sel:invert':
+            self._apply(context, 'Invert Selection', self._state.select_invert)
+        elif cid == 'obj:dup':
+            self._do_split(context, separate=False)
+        elif cid == 'obj:sep':
+            self._do_split(context, separate=True)
         elif cid == 'undo':
             self._do_undo(context)
         elif cid == 'redo':
@@ -1243,6 +1264,32 @@ class POBIM_OT_edit_splats(bpy.types.Operator):
                       else self._sphere_radius)
             self._hud_drag = ('radius', event.mouse_region_x, before)
         return None
+
+    def _do_split(self, context, separate):
+        """Duplicate/Separate the current selection into a new object, using
+        the LIVE state object (entry.state) so there is no divergence with the
+        modal. For separate, record a flags undo op on the modal history."""
+        from . import splat_ops
+        obj = bpy.data.objects.get(self._obj_name)
+        if obj is None:
+            return
+        snapshot = self._state.flags.copy()
+        new_obj, changed = splat_ops.perform_split(
+            context, obj, self._entry, separate, self.report)
+        if new_obj is None:
+            self._set_status(context)
+            if context.area:
+                context.area.tag_redraw()
+            return
+        if separate and changed is not None and changed.size:
+            self._history.push({
+                'label': 'Separate Selection',
+                'indices': changed,
+                'before': snapshot[changed].copy(),
+                'after': self._state.flags[changed].copy(),
+                'kind': 'flags',
+            })
+        self._persist(context)
 
     def _update_hud_drag(self, context, x):
         kind, sx, before = self._hud_drag
@@ -1850,6 +1897,25 @@ class POBIM_OT_export_ply(bpy.types.Operator, ExportHelper):
     filter_glob: StringProperty(default='*.ply', options={'HIDDEN'})
 
     uid: StringProperty()
+    selected_only: bpy.props.BoolProperty(
+        name='Selected Only',
+        description='ส่งออกเฉพาะ splat ที่เลือกไว้ (นอกจากตัด splat ที่ลบแล้ว)',
+        default=False)
+
+    def _selection_count(self, context):
+        obj = _find_splat_object(context, self.uid)
+        if obj is None:
+            return 0
+        entry = splat_gpu.REGISTRY.get(obj.pobim_splat_uid)
+        if entry is None or entry.state is None:
+            return 0
+        return entry.state.num_selected
+
+    def draw(self, context):
+        layout = self.layout
+        row = layout.row()
+        row.enabled = self._selection_count(context) > 0
+        row.prop(self, 'selected_only')
 
     def invoke(self, context, event):
         obj = _find_splat_object(context, self.uid)
@@ -1871,6 +1937,17 @@ class POBIM_OT_export_ply(bpy.types.Operator, ExportHelper):
         # back to original file rows for subsampled imports (survives the GPU
         # build, which only frees the cloud's heavy value arrays).
         keep_mask = entry.state.keep_mask() if entry.state is not None else None
+        # selected_only additionally requires the SELECTED bit: mask = not
+        # DELETED and (not selected_only or SELECTED).
+        if self.selected_only:
+            if entry.state is None:
+                self.report({'ERROR'}, 'ไม่มี splat ที่เลือกไว้')
+                return {'CANCELLED'}
+            sel = (entry.state.flags & State.SELECTED) != 0
+            keep_mask = sel if keep_mask is None else (keep_mask & sel)
+            if not bool(np.any(keep_mask)):
+                self.report({'ERROR'}, 'ไม่มี splat ที่เลือกไว้')
+                return {'CANCELLED'}
         source_indices = entry.cloud.source_indices if entry.cloud is not None else None
         source_path = bpy.path.abspath(obj.pobim_splat_file)
 

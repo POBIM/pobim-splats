@@ -13,6 +13,8 @@ _spec.loader.exec_module(_mod)
 SplatState = _mod.SplatState
 EditHistory = _mod.EditHistory
 State = _mod.State
+serialize_rows = _mod.serialize_rows
+deserialize_rows = _mod.deserialize_rows
 
 
 def test_selection():
@@ -274,6 +276,48 @@ def test_edit_history_transform_kind():
     assert st2.num_selected == 0
 
 
+def test_serialize_rows():
+    import base64
+    import zlib
+
+    # roundtrip a set of absolute source rows (order preserved)
+    rows = np.array([0, 5, 17, 999, 1_000_000], np.int64)
+    s = serialize_rows(rows)
+    assert isinstance(s, str)
+    back = deserialize_rows(s)
+    assert back.dtype == np.int64
+    assert np.array_equal(back, rows)
+
+    # header is the index count as an 8-byte LE uint64
+    payload = base64.b64decode(s)
+    assert int.from_bytes(payload[:8], 'little') == rows.size
+    zlib.decompress(payload[8:])   # valid zlib blob
+
+    # empty roundtrips to an empty array; None too
+    assert deserialize_rows(serialize_rows(np.zeros(0, np.int64))).size == 0
+    assert deserialize_rows('').size == 0
+    assert deserialize_rows(None).size == 0
+
+    # unsorted / duplicate rows survive verbatim (take() relies on order)
+    weird = np.array([9, 2, 2, 7, 0], np.int64)
+    assert np.array_equal(deserialize_rows(serialize_rows(weird)), weird)
+
+    # corrupt payloads raise ValueError (never garbage indices)
+    good = (2).to_bytes(8, 'little')
+    for bad in ('!!!not-base64!!!',
+                base64.b64encode(b'\x01\x02').decode(),            # truncated
+                base64.b64encode(good + b'junk').decode(),         # bad zlib
+                # header count (2) disagrees with the single decoded int64
+                base64.b64encode(good + zlib.compress(
+                    np.array([1], np.int64).tobytes())).decode()):
+        try:
+            deserialize_rows(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f'corrupt rows {bad!r} did not raise')
+
+
 def main():
     test_selection()
     test_visibility_and_delete()
@@ -282,6 +326,7 @@ def main():
     test_edit_history()
     test_edit_history_cap()
     test_edit_history_transform_kind()
+    test_serialize_rows()
     print('all splat_state tests passed')
 
 

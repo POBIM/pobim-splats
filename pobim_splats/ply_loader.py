@@ -58,6 +58,36 @@ class SplatCloud:
     def count(self):
         return self.positions.shape[0]
 
+    def take(self, rows):
+        """Return a NEW cloud holding ``rows`` (int64 indices into THIS cloud).
+
+        Slices every non-None array (positions, cov6, colors, opacities, sh,
+        quats, scales_log) and composes ``source_indices`` so the result still
+        maps back to ORIGINAL file rows for lossless export: when this cloud was
+        subsampled its ``source_indices`` are re-indexed; when it was a full load
+        (identity mapping) the requested rows ARE the absolute file rows. Arrays
+        are copied (contiguous), never views — the subset outlives this cloud.
+        Does not mutate ``self``.
+        """
+        rows = np.asarray(rows, dtype=np.int64).ravel()
+
+        def _slice(arr):
+            return None if arr is None else np.ascontiguousarray(arr[rows])
+
+        if self.source_indices is not None:
+            src = np.asarray(self.source_indices, np.int64)
+            new_src = np.ascontiguousarray(src[rows])
+        else:
+            new_src = np.ascontiguousarray(rows.copy())
+
+        out = SplatCloud(
+            _slice(self.positions), _slice(self.cov6), _slice(self.colors),
+            _slice(self.opacities), sh=_slice(self.sh), sh_bands=self.sh_bands,
+            source_indices=new_src)
+        out.quats = _slice(self.quats)
+        out.scales_log = _slice(self.scales_log)
+        return out
+
 
 # coefficients per channel for SH bands 1..3
 SH_COEFFS = {0: 0, 1: 3, 2: 8, 3: 15}

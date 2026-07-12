@@ -86,6 +86,21 @@ class POBIM_PT_splats(bpy.types.Panel):
             edit.prop(scene, 'pobim_splat_brush_radius')
             edit.prop(scene, 'pobim_splat_sphere_radius')
             state = entry.state
+            # split eligibility mirrors the operator's strict filter (rows
+            # flagged EXACTLY SELECTED), so the buttons never enable on a
+            # selection that is entirely hidden/deleted.
+            n_sel = state.num_selected_exact if state is not None else 0
+            # Duplicate / Separate the selected splats into a new object
+            split = edit.row(align=True)
+            split.enabled = n_sel > 0
+            dup_label = f'Duplicate ({n_sel:,})' if n_sel else 'Duplicate'
+            sep_label = f'Separate ({n_sel:,})' if n_sel else 'Separate'
+            op = split.operator('pobim_splats.duplicate_selection',
+                                icon='DUPLICATE', text=dup_label)
+            op.uid = obj.pobim_splat_uid
+            op = split.operator('pobim_splats.separate_selection',
+                                icon='UNLINKED', text=sep_label)
+            op.uid = obj.pobim_splat_uid
             if state is not None and (state.num_selected or state.num_hidden
                                       or state.num_deleted):
                 edit.label(text=f'เลือก {state.num_selected:,} · '

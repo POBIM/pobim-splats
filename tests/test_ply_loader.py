@@ -22,8 +22,57 @@ from make_test_ply import (
     make_torus_splats, write_compressed_gaussian_ply, write_gaussian_ply)
 
 
+def test_take(tmp):
+    """SplatCloud.take slices every array, composes source_indices, and does
+    not mutate the source cloud; take-of-take composes indices correctly."""
+    path = os.path.join(tmp, 'take.ply')
+    pos, scales, quat, sh0, opacity = make_torus_splats(4000)
+    rng = np.random.default_rng(7)
+    sh_rest = rng.uniform(-2.0, 2.0, (4000, 9)).astype(np.float32)
+    write_gaussian_ply(path, pos, scales, quat, sh0, opacity, sh_rest)
+
+    cloud = load_gaussian_ply(path)               # full load -> identity mapping
+    assert cloud.source_indices is None
+    assert cloud.quats is not None and cloud.scales_log is not None
+
+    rows = np.array([10, 5, 5, 3999, 0], np.int64)  # unsorted + duplicate
+    sub = cloud.take(rows)
+    assert sub.count == rows.size
+    # every non-None array sliced to the requested rows, in order
+    assert np.array_equal(sub.positions, cloud.positions[rows])
+    assert np.array_equal(sub.cov6, cloud.cov6[rows])
+    assert np.array_equal(sub.colors, cloud.colors[rows])
+    assert np.array_equal(sub.opacities, cloud.opacities[rows])
+    assert np.array_equal(sub.sh, cloud.sh[rows])
+    assert np.array_equal(sub.quats, cloud.quats[rows])
+    assert np.array_equal(sub.scales_log, cloud.scales_log[rows])
+    assert sub.sh_bands == cloud.sh_bands
+    # full-load identity -> the rows ARE the absolute source rows
+    assert np.array_equal(sub.source_indices, rows)
+
+    # arrays are copies, not views: mutating the subset never touches the source
+    src_pos_before = cloud.positions[rows].copy()
+    sub.positions[0] += 123.0
+    assert np.array_equal(cloud.positions[rows], src_pos_before), 'take aliased source'
+
+    # take-of-take composes absolute indices through the parent mapping
+    rows2 = np.array([4, 0, 1], np.int64)
+    sub2 = sub.take(rows2)
+    assert np.array_equal(sub2.source_indices, rows[rows2])
+    assert np.array_equal(sub2.positions, sub.positions[rows2])
+
+    # a subsampled parent composes source_indices through its own permutation
+    small = load_gaussian_ply(path, max_splats=1000)
+    assert small.source_indices is not None
+    r = np.array([3, 100, 999], np.int64)
+    ss = small.take(r)
+    assert np.array_equal(ss.source_indices, small.source_indices[r])
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
+        test_take(tmp)
+
         path = os.path.join(tmp, 't.ply')
         pos, scales, quat, sh0, opacity = make_torus_splats(50_000)
         write_gaussian_ply(path, pos, scales, quat, sh0, opacity)
