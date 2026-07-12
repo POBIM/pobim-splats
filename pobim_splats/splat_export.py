@@ -110,13 +110,64 @@ def _write_canonical_ply(out_path, raw, kept):
     return n
 
 
-def export_ply(source_path, out_path, keep_mask=None, source_indices=None):
+def _resolve_edit_rows(edits, source_indices, count):
+    """Map an edits payload's LOADED-cloud indices to ORIGINAL file rows.
+
+    Returns (file_rows int64, positions, quats, scales_log) with the same
+    length, or None when there is nothing to patch. Indices are mapped through
+    ``source_indices`` (loaded-row -> file-row) exactly like the keep mask.
+    """
+    if not edits:
+        return None
+    eidx = np.asarray(edits.get('indices', []), np.int64).ravel()
+    if eidx.size == 0:
+        return None
+    file_rows = (np.asarray(source_indices)[eidx] if source_indices is not None
+                 else eidx)
+    return (np.asarray(file_rows, np.int64),
+            np.asarray(edits['positions'], np.float32),
+            np.asarray(edits['quats'], np.float32),
+            np.asarray(edits['scales_log'], np.float32))
+
+
+def _patch_ply_rows(rows, kept, resolved):
+    """Overwrite x/y/z, rot_0..3, scale_0..2 of the surviving edited rows.
+
+    ``rows`` are the written rows (in ``kept`` order); untouched rows are left
+    byte-identical. Edited splats that were deleted (absent from ``kept``) are
+    silently skipped.
+    """
+    file_rows, pos, quats, scales_log = resolved
+    count = kept.max() + 1 if kept.size else 0
+    lut_len = max(int(count), int(file_rows.max()) + 1 if file_rows.size else 0)
+    row_to_out = np.full(lut_len, -1, np.int64)
+    row_to_out[kept] = np.arange(kept.shape[0])
+    out_pos = row_to_out[file_rows]
+    valid = out_pos >= 0
+    if not valid.any():
+        return
+    op = out_pos[valid]
+    rows['x'][op] = pos[valid, 0]
+    rows['y'][op] = pos[valid, 1]
+    rows['z'][op] = pos[valid, 2]
+    for i in range(4):
+        rows[f'rot_{i}'][op] = quats[valid, i]
+    for i in range(3):
+        rows[f'scale_{i}'][op] = scales_log[valid, i]
+
+
+def export_ply(source_path, out_path, keep_mask=None, source_indices=None,
+               edits=None):
     """Export surviving splats from source_path to a 3DGS .ply at out_path.
 
     keep_mask: optional bool array over the LOADED cloud; None exports all rows.
     source_indices: optional map from loaded-row -> original file-row for
         subsampled imports (SplatCloud.source_indices). Effective kept file rows
         are source_indices[keep_mask]; splats that were never loaded are DROPPED.
+    edits: optional geometry-override payload, a dict with 'indices' (into the
+        LOADED order), 'positions' (n,3), 'quats' (n,4 wxyz) and 'scales_log'
+        (n,3). The edited splats that survive get their position/rotation/scale
+        patched; every UNtouched surviving row stays byte-identical.
 
     Standard .ply sources keep their surviving rows byte-identical (original
     dtype and property order). Compressed .ply and SOG sources are re-emitted as
@@ -124,14 +175,25 @@ def export_ply(source_path, out_path, keep_mask=None, source_indices=None):
     """
     raw = _load_raw(source_path)
     kept = _kept_rows(raw['count'], keep_mask, source_indices)
+    resolved = _resolve_edit_rows(edits, source_indices, raw['count'])
 
     if raw['kind'] == 'ply':
         dtype = raw['dtype']
-        rows = raw['vertex'][kept]
+        rows = raw['vertex'][kept].copy()   # a copy so patches never touch source
+        if resolved is not None:
+            _patch_ply_rows(rows, kept, resolved)
         _write_ply(out_path, list(dtype.names), dtype, rows)
         return rows.shape[0]
 
     if raw['kind'] == 'canonical':
+        if resolved is not None:
+            file_rows, pos, quats, scales_log = resolved
+            raw['positions'] = raw['positions'].copy()
+            raw['quat_wxyz'] = raw['quat_wxyz'].copy()
+            raw['scales_log'] = raw['scales_log'].copy()
+            raw['positions'][file_rows] = pos
+            raw['quat_wxyz'][file_rows] = quats
+            raw['scales_log'][file_rows] = scales_log
         return _write_canonical_ply(out_path, raw, kept)
 
     raise ValueError(f'ไม่รู้จักชนิดข้อมูลต้นทาง: {raw.get("kind")}')

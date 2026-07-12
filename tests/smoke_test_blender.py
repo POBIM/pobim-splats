@@ -224,6 +224,60 @@ def main():
         assert cloud.count == count - deleted, (cloud.count, count, deleted)
     check('export_ply writes surviving splats', export_survivors)
 
+    def transform_edits_persist_and_export():
+        # The Track T<->U seam that once silently lost data: persisted
+        # transform edits must survive a .blend reload (registry rebuild) AND
+        # flow into the export. Steps: (1) create + persist edits, (2) simulate
+        # reload via a fresh load_entry_for_object, (3) assert entry.edits
+        # restored with the dirty rows, (4) export and re-parse, asserting the
+        # EDITED positions were written (not the originals).
+        import numpy as np
+        from pobim_splats.splat_edits import SplatEdits
+        from pobim_splats.ply_loader import load_gaussian_ply
+        obj = bpy.data.objects['torus']
+        uid = obj.pobim_splat_uid
+        entry = splat_gpu.REGISTRY[uid]
+        cloud = entry.cloud
+        count = cloud.count
+        assert cloud.quats is not None and cloud.scales_log is not None, \
+            'keep_geometry raw arrays missing from the cloud'
+
+        # odd rows survive edit_state_persist's delete (it deleted the evens)
+        idx = np.array([1, 3, 5], np.int64)
+        ed = SplatEdits(count)
+        M = np.eye(4)
+        M[:3, 3] = [10.0, 20.0, 30.0]
+        payload = ed.apply_matrix(idx, M, cloud.positions, cloud.quats,
+                                  cloud.scales_log)
+        assert payload is not None
+        expected = payload[2]['positions'].copy()
+        obj['pobim_splat_edits'] = ed.serialize()
+
+        # simulate .blend reload: fresh registry entry from object properties
+        splat_gpu.REGISTRY.pop(uid, None)
+        splat_gpu.load_entry_for_object(obj)
+        entry2 = splat_gpu.REGISTRY[uid]
+        assert getattr(entry2, 'edits', None) is not None, \
+            'geometry edits not restored on reload'
+        assert set(np.nonzero(entry2.edits.dirty)[0].tolist()) == set(idx.tolist()), \
+            'restored dirty rows wrong'
+
+        # export must carry the edited positions through the reloaded entry
+        out = os.path.join(tmp, 'export_edited.ply')
+        result = bpy.ops.pobim_splats.export_ply(filepath=out, uid=uid)
+        assert result == {'FINISHED'}, result
+        exported = load_gaussian_ply(out)
+        keep = (entry2.state.keep_mask() if entry2.state is not None
+                else np.ones(count, bool))
+        kept_rows = np.nonzero(keep)[0]
+        out_rows = np.searchsorted(kept_rows, idx)
+        assert (kept_rows[out_rows] == idx).all(), 'edited splats were dropped'
+        got = exported.positions[out_rows]
+        assert np.allclose(got, expected, atol=1e-4), \
+            f'exported positions are NOT the edited ones: {got[0]} vs {expected[0]}'
+    check('transform edits persist through reload into export',
+          transform_edits_persist_and_export)
+
     def edit_modal_registered():
         assert hasattr(bpy.ops.pobim_splats, 'edit_splats'), 'operator not registered'
         from pobim_splats.edit_tools import POBIM_OT_edit_splats
@@ -236,6 +290,47 @@ def main():
         assert result in ({'CANCELLED'}, {'PASS_THROUGH'}), result
         assert POBIM_OT_edit_splats._running is False, 'tool left running'
     check('edit_splats modal registers, cancels in background', edit_modal_registered)
+
+    def edit_overrides_restore():
+        # U4: obj['pobim_splat_edits'] restore path. When Track T's SplatEdits
+        # is importable, exercise serialize->reload->restore end to end; when
+        # it lags, assert the defensive path leaves the modal creatable anyway.
+        import numpy as np
+        from pobim_splats import edit_tools
+        obj = bpy.data.objects['torus']
+        entry = splat_gpu.REGISTRY[obj.pobim_splat_uid]
+        count = entry.cloud.count
+        try:
+            from pobim_splats.splat_edits import SplatEdits
+        except Exception:
+            SplatEdits = None
+        if SplatEdits is not None:
+            edits = SplatEdits(count)
+            idx = np.arange(0, min(count, 10), dtype=np.int64)
+            mat = np.eye(4, dtype=np.float32)
+            mat[:3, 3] = (0.5, -0.25, 0.1)      # a pure translation
+            cloud = entry.cloud
+            base_quat = getattr(cloud, 'quats', None)
+            base_slog = getattr(cloud, 'scales_log', None)
+            if base_quat is None:
+                base_quat = np.tile(np.array([1, 0, 0, 0], np.float32), (count, 1))
+            if base_slog is None:
+                base_slog = np.zeros((count, 3), np.float32)
+            edits.apply_matrix(idx, mat, cloud.positions, base_quat, base_slog)
+            obj['pobim_splat_edits'] = edits.serialize()
+            entry.edits = None                  # force a fresh restore
+            restored = SplatEdits.deserialize(obj['pobim_splat_edits'], count)
+            assert bool(np.any(restored.dirty)), 'restored edits lost dirty set'
+            entry.edits = restored
+        # the modal invoke path must survive the property either way
+        result = bpy.ops.pobim_splats.edit_splats(
+            'INVOKE_DEFAULT', uid=obj.pobim_splat_uid)
+        assert result in ({'CANCELLED'}, {'PASS_THROUGH'}), result
+        assert edit_tools.POBIM_OT_edit_splats._running is False, 'tool left running'
+        if 'pobim_splat_edits' in obj.keys():
+            del obj['pobim_splat_edits']
+        entry.edits = None
+    check('edit overrides serialize + restore path exercised', edit_overrides_restore)
 
     def reload_and_remove():
         obj = bpy.data.objects['torus']
@@ -256,6 +351,27 @@ def main():
         assert scene.pobim_splat_edit_tool == 'BRUSH', scene.pobim_splat_edit_tool
         scene.pobim_splat_edit_tool = 'RECT'
     check('edit tool enum registers with 6 items, round-trips', edit_tool_enum)
+
+    def radius_props():
+        # U2: the two radius scene props register with the documented ranges
+        # and round-trip (the modal reads them on invoke, writes on change).
+        scene = bpy.context.scene
+        bp = scene.bl_rna.properties['pobim_splat_brush_radius']
+        assert bp.default == 40, bp.default
+        assert bp.hard_min == 4 and bp.hard_max == 400, (bp.hard_min, bp.hard_max)
+        sp = scene.bl_rna.properties['pobim_splat_sphere_radius']
+        assert abs(sp.default - 0.25) < 1e-6, sp.default
+        assert sp.hard_max == 100.0, sp.hard_max
+        scene.pobim_splat_brush_radius = 123
+        assert scene.pobim_splat_brush_radius == 123
+        scene.pobim_splat_sphere_radius = 1.5
+        assert abs(scene.pobim_splat_sphere_radius - 1.5) < 1e-6
+        # clamping honours the registered bounds
+        scene.pobim_splat_brush_radius = 9999
+        assert scene.pobim_splat_brush_radius == 400
+        scene.pobim_splat_brush_radius = 40
+        scene.pobim_splat_sphere_radius = 0.25
+    check('radius scene props register + round-trip + clamp', radius_props)
 
     check('unregister addon', pobim_splats.unregister)
 

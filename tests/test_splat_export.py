@@ -126,12 +126,106 @@ def test_compressed_source(tmp):
     assert np.abs(dec_out.colors - dec_src.colors).max() < 1e-5
 
 
+def _new_geom(idx, seed):
+    """Fresh position/quat/scale_log override values for `idx`."""
+    rng = np.random.default_rng(seed)
+    n = len(idx)
+    pos = rng.uniform(-5, 5, (n, 3)).astype(np.float32)
+    q = rng.normal(size=(n, 4)).astype(np.float32)
+    q /= np.linalg.norm(q, axis=1, keepdims=True)
+    sl = rng.uniform(-4.0, -2.0, (n, 3)).astype(np.float32)
+    return pos, q, sl
+
+
+def test_patched_rows_standard(tmp):
+    """Standard ply: edits patch x/y/z/rot/scale of survivors; untouched rows
+    stay byte-identical."""
+    path = os.path.join(tmp, 'src_e.ply')
+    out = os.path.join(tmp, 'out_e.ply')
+    pos, scales, quat, sh0, opacity = make_torus_splats(2000)
+    write_gaussian_ply(path, pos, scales, quat, sh0, opacity)
+
+    idx = np.array([10, 20, 30, 1999], np.int64)
+    npos, nq, nsl = _new_geom(idx, 9)
+    edits = {'indices': idx, 'positions': npos, 'quats': nq, 'scales_log': nsl}
+
+    n = export_ply(path, out, edits=edits)         # keep all rows
+    assert n == 2000, n
+
+    src = load_raw_ply(path)
+    got = load_raw_ply(out)
+    v = got['vertex']
+    assert np.allclose(np.stack([v['x'][idx], v['y'][idx], v['z'][idx]], 1),
+                       npos, atol=1e-6), 'positions not patched'
+    assert np.allclose(np.stack([v[f'rot_{i}'][idx] for i in range(4)], 1),
+                       nq, atol=1e-6), 'rotation not patched'
+    assert np.allclose(np.stack([v[f'scale_{i}'][idx] for i in range(3)], 1),
+                       nsl, atol=1e-6), 'scale not patched'
+
+    untouched = np.setdiff1d(np.arange(2000), idx)
+    assert got['vertex'][untouched].tobytes() == src['vertex'][untouched].tobytes(), \
+        'untouched rows must be byte-identical'
+
+
+def test_patched_rows_with_keepmask(tmp):
+    """An edited-and-deleted splat is skipped; edited survivors map through the
+    keep mask to the right output rows."""
+    path = os.path.join(tmp, 'src_ek.ply')
+    out = os.path.join(tmp, 'out_ek.ply')
+    pos, scales, quat, sh0, opacity = make_torus_splats(2000)
+    write_gaussian_ply(path, pos, scales, quat, sh0, opacity)
+
+    keep = np.ones(2000, bool)
+    keep[500] = False                              # delete file row 500
+    idx = np.array([500, 600, 700], np.int64)      # 500 is deleted -> skipped
+    npos, nq, nsl = _new_geom(idx, 3)
+    edits = {'indices': idx, 'positions': npos, 'quats': nq, 'scales_log': nsl}
+
+    n = export_ply(path, out, keep_mask=keep, edits=edits)
+    assert n == 1999, n
+
+    kept = np.nonzero(keep)[0]
+    row_to_out = np.full(2000, -1, np.int64)
+    row_to_out[kept] = np.arange(kept.shape[0])
+    got = load_raw_ply(out)
+    v = got['vertex']
+    for k, orig in ((1, 600), (2, 700)):
+        op = row_to_out[orig]
+        assert np.allclose([v['x'][op], v['y'][op], v['z'][op]], npos[k], atol=1e-6)
+    # deleted row 500 is simply absent — count reflects it
+    assert got['count'] == 1999
+
+
+def test_patched_canonical(tmp):
+    """Compressed (canonical) source: edits overwrite the decoded arrays before
+    the standard-ply re-emit."""
+    cpath = os.path.join(tmp, 'src_e.compressed.ply')
+    out = os.path.join(tmp, 'out_ec.ply')
+    pos, scales, quat, sh0, opacity = make_torus_splats(2000)
+    write_compressed_gaussian_ply(cpath, pos, scales, quat, sh0, opacity)
+
+    idx = np.array([0, 100, 1999], np.int64)
+    npos, nq, nsl = _new_geom(idx, 5)
+    edits = {'indices': idx, 'positions': npos, 'quats': nq, 'scales_log': nsl}
+
+    n = export_ply(cpath, out, edits=edits)
+    assert n == 2000, n
+
+    dec = load_gaussian_ply(out)                   # decode the exported ply
+    assert np.allclose(dec.positions[idx], npos, atol=1e-5), 'canonical positions not patched'
+    # scales_log patched -> linear scales recover exp(new log)
+    assert np.allclose(dec.scales_log[idx], nsl, atol=1e-5)
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_roundtrip_keep_mask(tmp)
         test_keep_mask_none_exports_all(tmp)
         test_subsample_mapping(tmp)
         test_compressed_source(tmp)
+        test_patched_rows_standard(tmp)
+        test_patched_rows_with_keepmask(tmp)
+        test_patched_canonical(tmp)
     print('all splat_export tests passed')
 
 

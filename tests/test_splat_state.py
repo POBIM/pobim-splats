@@ -223,6 +223,57 @@ def test_edit_history_cap():
     assert EditHistory().max_ops == 64
 
 
+def test_edit_history_transform_kind():
+    # Phase 3: a 'transform' op carries geometry payloads EditHistory must NOT
+    # apply itself — undo/redo return (direction, op) for the caller to handle,
+    # and must leave the flag state untouched.
+    hist = EditHistory()
+    state = SplatState(20)
+    state.select_indices([1, 2, 3], 'set')     # a live selection to protect
+    flags_before = state.flags.copy()
+
+    idx = np.array([4, 5])
+    op = {
+        'label': 'move',
+        'kind': 'transform',
+        'indices': idx,
+        'before': {'positions': np.zeros((2, 3), np.float32)},
+        'after': {'positions': np.ones((2, 3), np.float32)},
+    }
+    hist.push(op)
+
+    # undo returns ('undo', op) and does NOT change the selection flags
+    res = hist.undo(state)
+    assert res == ('undo', op) or (res[0] == 'undo' and res[1] is op), res
+    assert np.array_equal(state.flags, flags_before), 'transform undo touched flags'
+    assert not hist.can_undo
+
+    # redo returns ('redo', op), still no flag change
+    res = hist.redo(state)
+    assert res[0] == 'redo' and res[1] is op, res
+    assert np.array_equal(state.flags, flags_before), 'transform redo touched flags'
+
+    # a flags op still applies as before AND returns the tuple
+    before = state.flags.copy()
+    changed = state.select_indices([9], 'add')
+    hist.push({'label': 'sel', 'indices': changed,
+               'before': before[changed].copy(),
+               'after': state.flags[changed].copy()})
+    assert state.flags[9] & State.SELECTED
+    res = hist.undo(state)
+    assert res[0] == 'undo' and not (state.flags[9] & State.SELECTED), res
+
+    # missing 'kind' defaults to flags (backward compatible)
+    st2 = SplatState(5)
+    h2 = EditHistory()
+    b = st2.flags.copy()
+    ch = st2.select_indices([0], 'set')
+    h2.push({'label': 'legacy', 'indices': ch,
+             'before': b[ch].copy(), 'after': st2.flags[ch].copy()})
+    h2.undo(st2)
+    assert st2.num_selected == 0
+
+
 def main():
     test_selection()
     test_visibility_and_delete()
@@ -230,6 +281,7 @@ def main():
     test_serialize_roundtrip()
     test_edit_history()
     test_edit_history_cap()
+    test_edit_history_transform_kind()
     print('all splat_state tests passed')
 
 

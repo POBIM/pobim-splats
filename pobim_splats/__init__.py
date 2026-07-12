@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'POBIM Splats — 3D Gaussian Splatting Viewer',
     'author': 'POBIM',
-    'version': (0, 6, 0),
+    'version': (0, 7, 0),
     'blender': (4, 2, 0),
     'location': 'View3D > Sidebar (N) > POBIM3DGS',
     'description': 'Import and display 3D Gaussian Splatting .ply files with a real GPU splat renderer',
@@ -96,6 +96,16 @@ def register():
         description='ช่วงเวลาขั้นต่ำระหว่างการเรียงลำดับความลึก (ทำงานเบื้องหลัง ไม่บล็อก viewport '
                     'และเรียงเฉพาะเมื่อกล้องหมุนเกิน ~1°)',
         default=0.2, min=0.0, max=5.0)
+    bpy.types.Scene.pobim_splat_brush_radius = IntProperty(
+        name='Brush Radius (px)',
+        description='รัศมีพู่กันเลือก splat เป็นพิกเซล (ในโหมดแก้ไข: กด F ปรับสด · '
+                    'Alt+ลูกกลิ้ง ±10% · [ ] ปรับทีละขั้น · หรือลากแถบ Radius บน HUD)',
+        default=40, min=4, max=400)
+    bpy.types.Scene.pobim_splat_sphere_radius = FloatProperty(
+        name='Sphere Radius (m)',
+        description='รัศมีทรงกลมเลือก splat เป็นเมตร (ในโหมดแก้ไข: กด F ปรับสด · '
+                    'Alt+ลูกกลิ้ง ±10% · [ ] ปรับทีละขั้น · หรือลากแถบ Radius บน HUD)',
+        default=0.25, min=1e-3, max=100.0)
 
     for cls in operators.CLASSES + measure.CLASSES + edit_tools.CLASSES + ui.CLASSES:
         bpy.utils.register_class(cls)
@@ -134,3 +144,5 @@ def unregister():
     del bpy.types.Scene.pobim_splat_edit_tool
     del bpy.types.Scene.pobim_splats_near_cull
     del bpy.types.Scene.pobim_splat_sort_interval
+    del bpy.types.Scene.pobim_splat_brush_radius
+    del bpy.types.Scene.pobim_splat_sphere_radius

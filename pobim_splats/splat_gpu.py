@@ -127,7 +127,18 @@ void main()
     vec4 d1 = texelFetch(dataTex, ivec2((base + 1) % 2046, (base + 1) / 2046), 0);
     vec4 d2 = texelFetch(dataTex, ivec2((base + 2) % 2046, (base + 2) / 2046), 0);
 
-    vec4 cam = u.modelView * vec4(d0.xyz, 1.0);
+    // live drag preview (no per-frame texture re-upload): apply previewMatrix
+    // in SPLAT-LOCAL space, before modelView. It only fires when misc.x > 0.5
+    // AND the splat is SELECTED (bit 0 of stFlags). stFlags is 0 unless the
+    // state texture was sampled (selColor.a > 0.5), so preview REQUIRES an
+    // active edit state — an untouched cloud never previews.
+    bool preview = (u.misc.x > 0.5 && (stFlags & 1) != 0);
+    vec3 localCenter = d0.xyz;
+    if (preview) {
+        localCenter = (u.previewMatrix * vec4(localCenter, 1.0)).xyz;
+    }
+
+    vec4 cam = u.modelView * vec4(localCenter, 1.0);
     bool ortho = u.projection[3][3] == 1.0;
 
     // behind the camera, and closer than the near-cull distance
@@ -177,6 +188,15 @@ void main()
     mat3 Vrk = mat3(d1.x, d1.y, d1.z,
                     d1.y, d2.x, d2.y,
                     d1.z, d2.y, d2.z);
+
+    // preview covariance: conjugate by the previewMatrix rotation/scale block.
+    // mat3(previewMatrix) is the column-major upper-left 3x3 (uploaded m.T so
+    // it reads correctly here). Vrk' = P3 * Vrk * P3^T is exact for
+    // rotation+uniform scale and an accepted approximation for per-axis scale.
+    if (preview) {
+        mat3 P3 = mat3(u.previewMatrix);
+        Vrk = P3 * Vrk * transpose(P3);
+    }
 
     // includes model rotation/scale: cov2d = J * A * Vrk * A^T * J^T
     mat3 W = transpose(mat3(u.modelView));
@@ -338,6 +358,8 @@ def _build_shader(frag_src, iface_name):
         '  vec4 params2;'   # aa flag, sh bands, sh tex width, srgb flag
         '  vec4 camPos;'    # camera position in object space (for SH)
         '  vec4 selColor;'  # selected-splat tint rgb; a>0.5 = state tex bound
+        '  mat4 previewMatrix;'  # live drag preview transform (splat-local)
+        '  vec4 misc;'      # x = preview active flag (>0.5); yzw spare
         '};')
     info.uniform_buf(0, 'SplatUniforms', 'u')
     info.sampler(0, 'FLOAT_2D', 'dataTex')
@@ -410,6 +432,11 @@ class SplatGPU:
         texels[base + 1, 3] = packed
         texels[base + 2, :3] = cloud.cov6[:, 3:]
 
+        # keep the CPU texel array alive so a transform commit can rewrite the
+        # edited splats' texels and re-upload (update_splats). Memory cost: the
+        # same as the data texture itself (rows*W*4 f32) — documented.
+        self._texels = texels
+        self._rows = rows
         self.data_tex = gpu.types.GPUTexture(
             (DATA_TEX_WIDTH, rows), format='RGBA32F',
             data=_np_buffer('FLOAT', texels.ravel()))
@@ -454,6 +481,10 @@ class SplatGPU:
         _attr_fill(vbo, 'cornerId', np.tile(np.array([0, 1, 2, 0, 2, 3], np.float32), n))
         self.vbo = vbo
         self.batch = gpu.types.GPUBatch(type='TRIS', buf=vbo)
+
+        # bumped by update_splats; lets pickers/caches (e.g. the edit tool's
+        # subsampled _pick_local) detect that positions changed and refresh
+        self.geometry_version = 0
 
         self.order_rows = (n + ORDER_TEX_WIDTH - 1) // ORDER_TEX_WIDTH
         self.order_tex = None
@@ -537,6 +568,46 @@ class SplatGPU:
 
         threading.Thread(target=job, daemon=True).start()
 
+    def update_splats(self, indices, positions, cov6_rows):
+        """Commit an edit: rewrite the data texture for ``indices`` in place.
+
+        Rewrites the position texel (t0.xyz) and the two covariance texels
+        (t1.xyz, t2.xyz) of the edited splats in the maintained CPU texel array
+        and re-creates the data texture (one full re-upload per commit — the
+        drag itself uses the GPU preview, not this). Also updates
+        ``self.positions`` (used by sorting/picking) in place and invalidates
+        the applied sort so the next frame re-orders.
+        """
+        idx = np.asarray(indices, np.int64).ravel()
+        if idx.size == 0:
+            return
+        positions = np.ascontiguousarray(positions, np.float32)
+        cov6_rows = np.ascontiguousarray(cov6_rows, np.float32)
+        base = idx * TEXELS_PER_SPLAT
+        self._texels[base, :3] = positions
+        self._texels[base + 1, :3] = cov6_rows[:, :3]
+        self._texels[base + 2, :3] = cov6_rows[:, 3:]
+        self.data_tex = gpu.types.GPUTexture(
+            (DATA_TEX_WIDTH, self._rows), format='RGBA32F',
+            data=_np_buffer('FLOAT', self._texels.ravel()))
+        self.positions[idx] = positions
+        self._applied_dir = None   # geometry moved -> force a re-sort
+        self.geometry_version += 1
+
+
+def recompute_cov6(quats_wxyz, scales_log):
+    """Covariance (N,6) from edited quats (w,x,y,z) and log-scales, reusing the
+    loader's Sigma = R S S^T R^T builder. Used to feed SplatGPU.update_splats
+    after a transform edit."""
+    from .ply_loader import _quat_scale_to_cov6
+    q = np.ascontiguousarray(quats_wxyz, np.float32)
+    q = q / (np.linalg.norm(q, axis=1, keepdims=True) + 1e-12)
+    scales = np.exp(np.asarray(scales_log, np.float32)).astype(np.float32)
+    out = np.empty((q.shape[0], 6), np.float32)
+    if q.shape[0]:
+        _quat_scale_to_cov6(q, scales, out)
+    return out
+
 
 def _redraw_once():
     redraw_viewports()
@@ -556,12 +627,31 @@ class SplatEntry:
         self.gpu = None
         self.error = None
         self.state = None   # SplatState, created lazily on first edit
+        self.edits = None   # SplatEdits geometry overrides (Phase 3 Track T)
 
 
 # uid -> SplatEntry (session state; rebuilt from object properties on file open)
 REGISTRY = {}
 
+# uid -> (np.ndarray 4x4 mat, active bool): live transform preview set by the
+# edit tool during a drag. The draw callback uploads it into previewMatrix and
+# raises misc.x; the vertex shader moves only SELECTED splats, so the drag
+# costs zero texture uploads. Absent uid -> identity/inactive.
+PREVIEW = {}
+
 _draw_handle = None
+
+
+def set_preview(uid, mat):
+    """Set the live preview transform (splat-local 4x4) for ``uid`` and redraw."""
+    PREVIEW[uid] = (np.asarray(mat, np.float32).reshape(4, 4), True)
+    redraw_viewports()
+
+
+def clear_preview(uid):
+    """Drop the live preview for ``uid`` (back to identity) and redraw."""
+    if PREVIEW.pop(uid, None) is not None:
+        redraw_viewports()
 
 
 def redraw_viewports():
@@ -584,11 +674,52 @@ def _splat_objects():
     return result
 
 
+def _apply_persisted_edits(entry):
+    """Re-apply restored geometry overrides to a freshly built SplatGPU.
+
+    Runs once, right after the GPU build inside the draw handler (GPU context
+    guaranteed). Ordering matters: ``edits.ensure`` snapshots the base geometry
+    BEFORE ``update_splats`` mutates ``sg.positions`` in place — and at build
+    time ``sg.positions`` ARE the freshly loaded ORIGINAL cloud positions, the
+    exact base SplatEdits expects. A reload within the same session creates a
+    fresh entry + fresh cloud, so this can never double-apply; re-running on
+    the same edits would write identical override values anyway (idempotent).
+    """
+    edits = getattr(entry, 'edits', None)
+    if edits is None:
+        return
+    try:
+        has_pending = getattr(edits, '_pending', None) is not None
+        if not has_pending and not edits.dirty.any():
+            return
+        cloud = entry.cloud
+        sg = entry.gpu
+        if getattr(cloud, 'quats', None) is None or \
+                getattr(cloud, 'scales_log', None) is None:
+            print('[pobim_splats] cannot re-apply geometry edits: '
+                  'raw quats/scales missing (keep_geometry)')
+            return
+        edits.ensure(sg.positions, cloud.quats, cloud.scales_log)
+        idx = np.nonzero(edits.dirty)[0]
+        if idx.size:
+            sg.update_splats(
+                idx, edits.positions[idx],
+                recompute_cov6(edits.quats[idx], edits.scales_log[idx]))
+    except Exception as e:
+        print(f'[pobim_splats] geometry edit re-apply failed: {e}')
+
+
 def ensure_gpu(entry, obj_name=''):
     """Build GPU resources for an entry inside a GPU context. Returns SplatGPU or None."""
     if entry.gpu is None and entry.error is None:
         try:
             entry.gpu = SplatGPU(entry.cloud)
+            # persisted transform edits (restored by load_entry_for_object)
+            # are sparse/pending until now: bake them into the data texture
+            _apply_persisted_edits(entry)
+            # free the GPU-resident arrays, but KEEP cloud.quats / scales_log:
+            # transform edits need the raw rotation+scale (cov6 is not
+            # invertible back to quat+scale).
             entry.cloud.cov6 = entry.cloud.colors = None
             entry.cloud.opacities = entry.cloud.sh = None
         except Exception as e:
@@ -659,10 +790,14 @@ def render_depth_map(view, proj, width, height):
                                      SELECTED_COLOR[2], 1.0 if has_state else 0.0],
                                     np.float32)
 
+                    # depth pick never previews: identity previewMatrix + zero
+                    # misc keep the UBO the shader's expected 68 floats.
+                    prev4 = np.eye(4, dtype=np.float32).ravel()
+                    misc = np.zeros(4, np.float32)
                     ubo = gpu.types.GPUUniformBuf(_np_buffer(
                         'FLOAT',
                         np.concatenate([mv.T.ravel(), proj.T.ravel(),
-                                        params, cam4, sel4])))
+                                        params, cam4, sel4, prev4, misc])))
                     shader.bind()
                     shader.uniform_block('u', ubo)
                     shader.uniform_sampler('dataTex', sg.data_tex)
@@ -766,8 +901,18 @@ def _draw_callback():
                              SELECTED_COLOR[2], 1.0 if has_state else 0.0],
                             np.float32)
 
+            # live transform preview for this cloud (identity when inactive).
+            # uploaded column-major (m.T) like modelView/projection.
+            prev = PREVIEW.get(entry.uid)
+            if prev is not None and prev[1]:
+                prev4 = np.asarray(prev[0], np.float32).reshape(4, 4).T.ravel()
+                misc = np.array([1.0, 0.0, 0.0, 0.0], np.float32)
+            else:
+                prev4 = np.eye(4, dtype=np.float32).ravel()
+                misc = np.zeros(4, np.float32)
+
             ubo_data = np.concatenate([mv.T.ravel(), proj.T.ravel(),
-                                       params, cam4, sel4])
+                                       params, cam4, sel4, prev4, misc])
             ubo = gpu.types.GPUUniformBuf(_np_buffer('FLOAT', ubo_data))
 
             shader.bind()
@@ -834,6 +979,23 @@ def load_entry_for_object(obj):
             print(f'[pobim_splats] discarding stale edit state for {obj.name}: {e}')
             try:
                 del obj['pobim_splat_state']
+            except Exception:
+                pass
+    # restore serialized geometry overrides (transform edits) the same way.
+    # SplatEdits.deserialize keeps them sparse/pending: they are baked into
+    # the GPU data texture on the first draw (ensure_gpu ->
+    # _apply_persisted_edits) and read directly by the export payload —
+    # without this restore, saved Move/Rotate/Scale edits are silently lost
+    # on .blend reload in both the viewport and the export.
+    s = obj.get('pobim_splat_edits')
+    if s:
+        try:
+            from .splat_edits import SplatEdits  # lazy: avoids import cycle
+            entry.edits = SplatEdits.deserialize(s, cloud.count)
+        except Exception as e:
+            print(f'[pobim_splats] discarding stale geometry edits for {obj.name}: {e}')
+            try:
+                del obj['pobim_splat_edits']
             except Exception:
                 pass
     REGISTRY[obj.pobim_splat_uid] = entry

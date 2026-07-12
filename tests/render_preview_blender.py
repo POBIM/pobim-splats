@@ -66,8 +66,10 @@ def render():
         cam = np.linalg.inv(view)[:3, 3]
         cam4 = np.array([cam[0], cam[1], cam[2], 0.0], np.float32)
         sel4 = np.zeros(4, np.float32)   # no edit state -> a=0 skips the fetch
+        prev4 = np.eye(4, dtype=np.float32).ravel()  # identity preview, inactive
+        misc = np.zeros(4, np.float32)
         ubo_data = np.concatenate([view.T.ravel(), proj.T.ravel(),
-                                   params, cam4, sel4])
+                                   params, cam4, sel4, prev4, misc])
         ubo = gpu.types.GPUUniformBuf(splat_gpu._np_buffer('FLOAT', ubo_data))
 
         gpu.state.blend_set('ALPHA')

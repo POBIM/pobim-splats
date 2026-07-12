@@ -40,7 +40,8 @@ def run_tests():
     write_gaussian_ply(ply_path, *make_torus_splats(100_000))
     cloud = load_gaussian_ply(ply_path)
 
-    def make_ubo(view, proj, size, sh_bands=0, sh_width=0, cam=None, sel4=None):
+    def make_ubo(view, proj, size, sh_bands=0, sh_width=0, cam=None, sel4=None,
+                 preview=None):
         params = np.array([size, size, 1.0, 1.0, 0.0,
                            sh_bands, sh_width, 0.0], np.float32)
         if cam is None:
@@ -52,8 +53,17 @@ def run_tests():
             sel4 = np.zeros(4, np.float32)
         else:
             sel4 = np.asarray(sel4, np.float32)
+        # previewMatrix defaults to identity + misc.x = 0 (inactive), keeping
+        # all existing analytic tests byte-for-byte unchanged. Passing a 4x4
+        # `preview` uploads it column-major and flags misc.x = 1.
+        if preview is None:
+            prev4 = np.eye(4, dtype=np.float32).ravel()
+            misc = np.zeros(4, np.float32)
+        else:
+            prev4 = np.asarray(preview, np.float32).reshape(4, 4).T.ravel()
+            misc = np.array([1.0, 0.0, 0.0, 0.0], np.float32)
         data = np.concatenate([view.T.ravel(), proj.T.ravel(),
-                               params, cam4, sel4])
+                               params, cam4, sel4, prev4, misc])
         return gpu.types.GPUUniformBuf(splat_gpu._np_buffer('FLOAT', data))
 
     shader = splat_gpu.get_shader()
@@ -431,6 +441,82 @@ def run_tests():
     log(f'OK hidden coverage: {cov_hid:.1%} (delete was {cov_del:.1%})')
     assert abs(cov_hid - cov_del) < 0.03, \
         f'hidden ({cov_hid:.1%}) does not match deleted ({cov_del:.1%})'
+
+    # --- transform preview + commit (Phase 3, Track T) ------------------
+    # A SELECTED splat must move under the GPU preview matrix (no texture
+    # re-upload), and update_splats must move it PERMANENTLY, with the async
+    # sort still functioning after the in-place position update.
+    from pobim_splats.splat_gpu import recompute_cov6
+
+    one_t = build_cloud(
+        np.zeros((1, 3), np.float32),
+        np.full((1, 3), 0.5, np.float32),
+        np.array([[1, 0, 0, 0]], np.float32),
+        np.ones((1, 3), np.float32),
+        np.ones(1, np.float32))
+    sgT = splat_gpu.SplatGPU(one_t)
+    stT = SplatState(1)
+    stT.select_indices([0], 'set')   # preview only moves SELECTED splats
+    sgT.upload_state(stT.flags)
+
+    viewT = np.eye(4, dtype=np.float32)
+    viewT[2, 3] = -8.0
+    projT = np.array([
+        [2.0, 0, 0, 0], [0, 2.0, 0, 0],
+        [0, 0, -1.02, -2.02], [0, 0, -1, 0]], np.float32)
+
+    def centroid_x(preview=None):
+        offsx = gpu.types.GPUOffScreen(256, 256)
+        with offsx.bind():
+            fbx = gpu.state.active_framebuffer_get()
+            fbx.clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
+            gpu.state.blend_set('ALPHA')
+            # SEL (a>0.5) binds the state tex so stFlags SELECTED is read,
+            # which the preview requires; identity preview when None
+            ubox = make_ubo(viewT, projT, 256, sel4=SEL, preview=preview)
+            shader.bind()
+            shader.uniform_block('u', ubox)
+            shader.uniform_sampler('dataTex', sgT.data_tex)
+            shader.uniform_sampler('orderTex', sgT.order_tex)
+            shader.uniform_sampler('shTex', sgT.data_tex)
+            shader.uniform_sampler('stateTex', sgT.state_tex)
+            sgT.batch.draw(shader)
+            gpu.state.blend_set('NONE')
+            rawx = fbx.read_color(0, 0, 256, 256, 4, 0, 'FLOAT')
+            out = np.array(rawx.to_list(), np.float32).reshape(256, 256, 4)
+        offsx.free()
+        a = out[..., 3]
+        ys, xs = np.nonzero(a > 0.05)
+        if xs.size == 0:
+            return None
+        return float((xs * a[ys, xs]).sum() / a[ys, xs].sum())
+
+    cx_base = centroid_x(None)
+    tx = np.eye(4, dtype=np.float32)
+    tx[0, 3] = 2.0   # translate +2 in local x
+    cx_prev = centroid_x(tx)
+    log(f'OK transform preview: centroid x {cx_base:.1f} -> {cx_prev:.1f}')
+    assert cx_base is not None and cx_prev is not None, 'splat did not render'
+    assert cx_prev - cx_base > 15.0, 'preview did not move the selected splat'
+
+    # commit: update_splats moves it permanently; a render WITHOUT preview now
+    # shows the new location, and the sort still completes afterwards.
+    new_pos = np.array([[2.0, 0.0, 0.0]], np.float32)
+    new_cov = recompute_cov6(np.array([[1, 0, 0, 0]], np.float32),
+                             np.log(np.full((1, 3), 0.5, np.float32)))
+    sgT.update_splats([0], new_pos, new_cov)
+    cx_commit = centroid_x(None)   # no preview -> geometry itself moved
+    log(f'OK transform commit: centroid x -> {cx_commit:.1f}')
+    assert cx_commit - cx_base > 15.0, 'commit did not move the splat permanently'
+    assert abs(cx_commit - cx_prev) < 20.0, 'commit location disagrees with preview'
+
+    sgT.sort_if_needed(viewT, 0.0)
+    dlT = _time.monotonic() + 10.0
+    while sgT._sort_result is None and _time.monotonic() < dlT:
+        _time.sleep(0.01)
+    sgT.sort_if_needed(viewT, 0.0)
+    assert sgT._applied_dir is not None, 'sort did not complete after commit'
+    log('OK sort completes after transform commit')
 
     pobim_splats.unregister()
     log('PASSED')

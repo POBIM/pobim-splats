@@ -48,6 +48,11 @@ class SplatCloud:
         # indices that survived, so an exporter can map back to source rows;
         # None when every row was loaded (identity mapping).
         self.source_indices = source_indices
+        # raw geometry kept for transform edits (build_cloud keep_geometry):
+        # cov6 alone cannot be inverted back to quat+scale, so transforms need
+        # these. Populated subsample-aligned; None when keep_geometry is False.
+        self.quats = None             # (N,4) f32 (w,x,y,z), normalized
+        self.scales_log = None        # (N,3) f32, log-scale
 
     @property
     def count(self):
@@ -161,13 +166,18 @@ def _quat_scale_to_cov6(quat, scales, out):
 
 
 def build_cloud(positions, scales, quat, colors, opacities,
-                max_splats=0, sh=None):
+                max_splats=0, sh=None, keep_geometry=True):
     """Assemble a SplatCloud from raw arrays (shared by all format decoders).
 
     positions (N,3); scales (N,3) LINEAR (already exp'd); quat (N,4) w,x,y,z;
     colors (N,3) 0..1 in SH color space; opacities (N,) 0..1;
     sh: channel-major SH coefficients (N, 3C) as float32 or pre-quantized
     uint8, or None.
+
+    keep_geometry (default True): stash cloud.quats (normalized, subsample-
+    aligned) and cloud.scales_log so transform edits can recover the raw
+    rotation+scale (cov6 alone is not invertible). Costs +28 bytes/splat and
+    is shared by every format decoder (standard/compressed PLY and SOG).
     """
     n = positions.shape[0]
     source_indices = None
@@ -200,10 +210,19 @@ def build_cloud(positions, scales, quat, colors, opacities,
         elif sh.dtype != np.uint8:
             sh = quantize_sh(np.asarray(sh, np.float32))
 
-    return SplatCloud(
+    cloud = SplatCloud(
         np.ascontiguousarray(positions, dtype=np.float32), cov6,
         colors, np.ascontiguousarray(opacities, dtype=np.float32),
         sh=sh, sh_bands=sh_bands, source_indices=source_indices)
+
+    if keep_geometry:
+        # subsample-aligned with cov6 above (quat/scales already subsampled and
+        # quat already normalized). scales is LINEAR here -> store log-scale.
+        cloud.quats = np.ascontiguousarray(quat, dtype=np.float32)
+        cloud.scales_log = np.log(
+            np.maximum(np.asarray(scales, np.float32), 1e-30)).astype(np.float32)
+
+    return cloud
 
 
 def opacity_to_logit(opacities):

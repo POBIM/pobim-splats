@@ -191,9 +191,19 @@ class SplatState:
 class EditHistory:
     """Tool-local undo/redo (Blender's global undo can't see numpy state).
 
-    Each op is a dict: {'label': str, 'indices': ndarray,
-    'before': ndarray(u8), 'after': ndarray(u8)}. Undo/redo restore via
-    ``SplatState.set_flags_raw``.
+    Each op is a dict with a ``kind`` selecting how undo/redo applies it:
+
+    - ``'flags'`` (the default when absent): a selection/visibility/delete edit
+      of the form {'label', 'indices', 'before' u8, 'after' u8}. Undo/redo
+      restore directly via ``SplatState.set_flags_raw`` — the legacy behavior.
+    - ``'transform'`` (Phase 3): a geometry edit whose 'before'/'after' are
+      SplatEdits payloads. EditHistory does NOT touch these (it has no
+      SplatEdits handle): undo/redo return ``(direction, op)`` and the CALLER
+      applies the restore via ``SplatEdits.restore`` + a GPU update.
+
+    ``undo``/``redo`` always return ``(direction, op)`` (or ``None`` when the
+    stack end is reached); flags callers may ignore the return value, which
+    keeps the existing API backward compatible.
 
     The stack is bounded (``max_ops``, ring behavior): a select-all op on a
     multi-million cloud stores three full-length arrays, so an unbounded
@@ -227,17 +237,21 @@ class EditHistory:
 
     def undo(self, state):
         if not self.can_undo:
-            return
+            return None
         self.cursor -= 1
         op = self.ops[self.cursor]
-        state.set_flags_raw(op['indices'], op['before'])
+        if op.get('kind', 'flags') == 'flags':
+            state.set_flags_raw(op['indices'], op['before'])
+        return ('undo', op)
 
     def redo(self, state):
         if not self.can_redo:
-            return
+            return None
         op = self.ops[self.cursor]
         self.cursor += 1
-        state.set_flags_raw(op['indices'], op['after'])
+        if op.get('kind', 'flags') == 'flags':
+            state.set_flags_raw(op['indices'], op['after'])
+        return ('redo', op)
 
     def clear(self):
         self.ops = []
