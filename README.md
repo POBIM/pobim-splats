@@ -78,29 +78,42 @@ persist across tool sessions and .blend save/load.
   last segment and the cloud rescales about that segment's first point
   (undoable). **Clear Measurements** in the panel wipes everything.
 
-### Edit Splats: select / hide / delete / export
+### Edit Splats: select / transform / hide / delete / export
 
 Click **Edit Splats** in the splat's panel box to enter the editing tool
-(SuperSplat-style state flags, selection shown in yellow):
+(SuperSplat-style state flags, selection shown in yellow). A clickable
+**HUD toolbar** at the top of the viewport holds every tool, the transform
+modes, undo/redo and Done — hotkeys are optional:
 
-- **Six selection tools** (dropdown or hotkey, matching the SuperSplat
-  keys): **R** rectangle · **L** lasso · **P** polygon (Enter or click the
-  first vertex to close, Backspace steps back) · **B** brush (**[ ]**
-  resize) · **S** 3D sphere (surface-picked center, **[ ]** resize) ·
-  **C** 3D box (two surface-picked corners, object-aligned)
+- **Six selection tools** (HUD chips or SuperSplat-matching keys):
+  **R** rectangle · **L** lasso · **P** polygon (Enter or click the first
+  vertex to close, Backspace steps back) · **B** brush ·
+  **S** 3D sphere · **C** 3D box
+- **Sizing that sticks**: press **F** and drag to resize brush/sphere
+  (Blender-style), drag the radius chip on the HUD, **Alt+Wheel**, **[ ]**,
+  or use the panel sliders — values persist in the scene
+- **Sphere/Box preview**: place it, drag the handles to adjust, then
+  **Enter** or the Apply chip commits the selection
 - Every tool: plain drag/click = **set**, **Shift** adds, **Ctrl** removes
+- **Transform the selection**: **1 / 2 / 3** (or **G**) = Move / Rotate /
+  Scale about the selection center — **X/Y/Z** axis lock, **Shift**
+  precision, live preview, **Enter** commits, **Esc** cancels
 - **A** select all · **Shift+A** none · **Ctrl+I** invert
 - **H** hide selected · **Alt+H** unhide all
 - **X / Del** delete selected (soft — undoable)
-- **Ctrl+Z / Ctrl+Shift+Z** undo/redo (tool-local history)
-- **Esc / right-click** exits; edit state persists in the .blend
+- **Ctrl+Z / Ctrl+Shift+Z** undo/redo (selections AND transforms)
+- **Esc / right-click** exits; selections, hidden/deleted state and
+  transforms all persist in the .blend
 
-**Export PLY** writes the surviving (non-deleted) splats. From a standard
-`.ply` source the export is **lossless** — surviving rows are copied
-byte-for-byte from the original file (all attributes, including full SH).
-From `.compressed.ply`/`.sog` sources a standard `.ply` is synthesized from
-the decoded values. Subsampled imports (Max Splats) export only the loaded
-subset.
+**Export PLY** writes the surviving (non-deleted) splats with any
+transforms applied. From a standard `.ply` source the export is
+**lossless** for untouched splats — their rows are copied byte-for-byte
+from the original file (all attributes, including full SH); transformed
+splats get exactly their position/rotation/scale fields patched. From
+`.compressed.ply`/`.sog` sources a standard `.ply` is synthesized from the
+decoded values. Subsampled imports (Max Splats) export only the loaded
+subset. Note: rotating splats does not yet rotate their SH coefficients
+(slight view-dependent color shift on rotated splats with SH bands).
 
 ### Color tip
 
